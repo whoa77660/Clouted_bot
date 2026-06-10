@@ -8,9 +8,13 @@ from bot import application
 from monitor import check_all_users
 
 POLL_INTERVAL_MINUTES = 5
-PORT = int(os.environ.get("PORT", 10000))   # Render provides PORT
+PORT = int(os.environ.get("PORT", 10000))
 
-# --- Minimal HTTP handler that always returns 200 ---
+# --- Periodic monitor function (called by JobQueue) ---
+async def periodic_monitor(context):
+    await check_all_users()
+
+# --- Minimal HTTP handler for Render health checks ---
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -18,13 +22,12 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"OK")
 
 def run_health_server():
-    """Start a simple HTTP server so Render sees an open port."""
     server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
     print(f"Health server listening on port {PORT}")
     server.serve_forever()
 
-# --- Keep‑alive pinger (uses the external Render URL) ---
-RENDER_URL = "https://clouted-bot.onrender.com/"   # ← replace with your real URL
+# --- Keep‑alive pinger (replace with your actual Render URL) ---
+RENDER_URL = "https://clouted-bot.onrender.com/"   # ← replace me!
 
 def keep_alive():
     while True:
@@ -37,13 +40,13 @@ def keep_alive():
 
 # --- Start everything ---
 if __name__ == '__main__':
-    # 1. Start the health server in a daemon thread
+    # 1. Health server thread
     threading.Thread(target=run_health_server, daemon=True).start()
 
-    # 2. Start the keep‑alive pinger in a daemon thread
+    # 2. Keep‑alive thread
     threading.Thread(target=keep_alive, daemon=True).start()
 
-    # 3. Set up the Telegram bot
+    # 3. Telegram bot
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
