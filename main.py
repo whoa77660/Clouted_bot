@@ -8,7 +8,7 @@ from monitor import check_all_users
 POLL_INTERVAL_MINUTES = 5   # change to 1 for fast testing
 
 # --- Keep‑alive (pings itself every 49s) ---
-RENDER_URL = "https://your-app.onrender.com/"   # <-- replace with your actual URL
+RENDER_URL = "https://clouted-bot.onrender.com"   # <-- replace with your actual URL
 
 def keep_alive():
     while True:
