@@ -8,7 +8,7 @@ from monitor import check_all_users
 POLL_INTERVAL_MINUTES = 5   # change to 1 for fast testing
 
 # --- Keep‑alive (pings itself every 49s) ---
-RENDER_URL = "https://clouted-bot.onrender.com"   # <-- replace with your actual URL
+RENDER_URL = "https://clouted-bot.onrender.com/"   # <-- replace with your actual URL
 
 def keep_alive():
     while True:
@@ -26,10 +26,14 @@ async def periodic_monitor(context):
     await check_all_users()
 
 if __name__ == '__main__':
+    # Explicitly create an event loop (required for Python 3.14+)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     application.job_queue.run_repeating(
         periodic_monitor,
         interval=POLL_INTERVAL_MINUTES * 60,
-        first=0   # immediate first poll
+        first=0
     )
     print("Bot started. Polling every", POLL_INTERVAL_MINUTES, "minutes.")
     application.run_polling()
