@@ -371,11 +371,21 @@ async def videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     for clip_id, clip in clips.items():
-        status_emoji = "✅" if clip.get('status') == 'healthy' else "❌"
+        # Correct emoji for each status
+        status = clip.get('status', 'unknown')
+        if status == 'healthy':
+            status_emoji = "✅"
+        elif status in ('flagged', 'rejected'):
+            status_emoji = "❌"
+        elif status == 'pending':
+            status_emoji = "🕒"       # waiting / under review
+        else:
+            status_emoji = "❓"       # unknown status
+
         campaign = html.escape(str(clip.get('campaignName', 'Unknown')))
         views = html.escape(str(clip.get('views', 0)))
         earnings = cents_to_dollar(clip.get('earningsCents', 0))
-        status_val = html.escape(str(clip.get('status', '?')))
+        status_val = html.escape(str(status))
         url = clip.get('url', '')
 
         text = (
