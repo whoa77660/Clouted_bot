@@ -10,8 +10,9 @@ BROWSER_HEADERS = {
 }
 
 def validate_and_save_cookie(chat_id: int, cookie_input: str):
-    if ';' in cookie_input or cookie_input.count('=') > 1:
-        cookie_header = cookie_input.strip()
+    # If the input doesn't look like a full cookie (no '=' or ';'), prepend the name
+    if '=' not in cookie_input and ';' not in cookie_input:
+        cookie_header = f"__Secure-better-auth.session_token={cookie_input.strip()}"
     else:
         cookie_header = cookie_input.strip()
 
@@ -20,17 +21,28 @@ def validate_and_save_cookie(chat_id: int, cookie_input: str):
 
     try:
         resp = requests.get(f'{CLOUTED_BASE_URL}/api/auth/get-session', headers=headers)
-        resp.raise_for_status()
-        data = resp.json()
+        
+        # Debug output for troubleshooting
+        print(f"[VALIDATE] Status: {resp.status_code}")
+        print(f"[VALIDATE] Content-Type: {resp.headers.get('Content-Type','unknown')}")
+        print(f"[VALIDATE] Body (first 300 chars): {resp.text[:300]}")
 
+        if resp.status_code != 200:
+            return False, f"❌ Server returned HTTP {resp.status_code}. Cookie may be invalid or expired."
+
+        if 'application/json' not in resp.headers.get('Content-Type', ''):
+            return False, f"❌ Response is not JSON. Content-Type: {resp.headers.get('Content-Type')}. Body: {resp.text[:200]}"
+
+        data = resp.json()
         if not isinstance(data, dict):
-            return False, "❌ Response is not JSON."
+            return False, f"❌ Response is not a JSON object."
 
         session = data.get('session')
         user = data.get('user')
         if not session or not user:
             return False, f"❌ Session/user missing."
 
+        # Store cookie and user info
         get_user_settings_ref(chat_id).set({
             'clouted_cookie': cookie_header,
             'userId': user['id'],
