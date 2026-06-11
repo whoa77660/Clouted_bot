@@ -4,6 +4,7 @@ from firebase_db import (
 )
 from api_client import fetch_campaigns, fetch_clips, fetch_campaign_progress
 from bot import send_notification
+from config import OWNER_ID
 
 async def check_changes_for_user(chat_id: int):
     was_invalid = get_cookie_invalid_flag(chat_id)
@@ -53,7 +54,6 @@ async def check_changes_for_user(chat_id: int):
         for uuid, camp in new_camp_dict.items():
             old = old_campaigns.get(uuid)
             if old is None:
-                # New campaign
                 await send_notification(chat_id,
                     f"🆕 New Campaign\n"
                     f"Name: {camp['name']}\n"
@@ -64,7 +64,6 @@ async def check_changes_for_user(chat_id: int):
                 print(f"[NEW CAMPAIGN] {camp['name']} ({uuid})")
                 campaigns_changed = True
             else:
-                # Check status change
                 if camp['status'] != old['status']:
                     emoji = "▶️" if camp['status'] == 'active' else ("⏸️" if camp['status'] == 'paused' else "🔄")
                     await send_notification(chat_id,
@@ -75,7 +74,6 @@ async def check_changes_for_user(chat_id: int):
                     print(f"[STATUS CHANGE] {camp['name']}: {old['status']} → {camp['status']}")
                     campaigns_changed = True
 
-                # Progress change
                 old_progress = old.get('progress')
                 new_progress = camp.get('progress')
                 if old_progress and new_progress:
@@ -92,7 +90,7 @@ async def check_changes_for_user(chat_id: int):
     else:
         campaigns_changed = True
 
-    # ---- CLIP NOTIFICATIONS (unchanged) ----
+    # ---- CLIP NOTIFICATIONS ----
     clips_changed = False
     if not is_first_poll:
         for clip_id, clip in new_clip_dict.items():
@@ -188,3 +186,16 @@ async def check_all_users():
     print(f"[MONITOR] Checking {len(users)} user(s)...")
     for chat_id in users:
         await check_changes_for_user(chat_id)
+
+    # ---- Send summary to owner ----
+    try:
+        if users:
+            first_user = next(iter(users))
+            camps = get_user_state_ref(first_user, 'campaigns').get() or {}
+            clips = get_user_state_ref(first_user, 'clips').get() or {}
+            msg = f"✅ Monitor check completed\nCampaigns: {len(camps)}\nClips: {len(clips)}"
+        else:
+            msg = "✅ Monitor check completed\nNo users linked."
+        await send_notification(OWNER_ID, msg)
+    except Exception as e:
+        print(f"Failed to send monitor summary: {e}")
