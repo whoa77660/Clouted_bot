@@ -30,7 +30,7 @@ async def check_changes_for_user(chat_id: int):
     if not isinstance(fresh_campaigns, list) or not isinstance(fresh_clips, list):
         return
 
-    # Attach progress to campaigns
+    # Attach progress to campaigns (no notification)
     for camp in fresh_campaigns:
         uuid = camp.get('uuid')
         if uuid:
@@ -49,11 +49,12 @@ async def check_changes_for_user(chat_id: int):
 
     campaigns_changed = False
 
-    # ---- CAMPAIGN NOTIFICATIONS ----
+    # ---- CAMPAIGN NOTIFICATIONS (status + progress + budget milestones) ----
     if not is_first_poll:
         for uuid, camp in new_camp_dict.items():
             old = old_campaigns.get(uuid)
             if old is None:
+                # New campaign
                 await send_notification(chat_id,
                     f"🆕 New Campaign\n"
                     f"Name: {camp['name']}\n"
@@ -61,9 +62,11 @@ async def check_changes_for_user(chat_id: int):
                     f"CPM: {camp.get('cpm','?')}\n"
                     f"Participants: {camp.get('participantCount','?')}"
                 )
-                print(f"[NEW CAMPAIGN] {camp['name']} ({uuid})")
                 campaigns_changed = True
+                # Initialize budget milestone tracking for the new campaign
+                camp['last_budget_milestone'] = 0
             else:
+                # Status change
                 if camp['status'] != old['status']:
                     emoji = "▶️" if camp['status'] == 'active' else ("⏸️" if camp['status'] == 'paused' else "🔄")
                     await send_notification(chat_id,
@@ -71,9 +74,9 @@ async def check_changes_for_user(chat_id: int):
                         f"Name: {camp['name']}\n"
                         f"Old: {old['status']} → New: {camp['status']}"
                     )
-                    print(f"[STATUS CHANGE] {camp['name']}: {old['status']} → {camp['status']}")
                     campaigns_changed = True
 
+                # Progress change (from campaign.progress)
                 old_progress = old.get('progress')
                 new_progress = camp.get('progress')
                 if old_progress and new_progress:
@@ -85,12 +88,37 @@ async def check_changes_for_user(chat_id: int):
                             f"Campaign: {camp['name']}\n"
                             f"Progress: {old_pct}% → {new_pct}%"
                         )
-                        print(f"[PROGRESS] {camp['name']}: {old_pct}% → {new_pct}%")
                         campaigns_changed = True
+
+                # --- Budget Milestone Calculation ---
+                budget = camp.get('budget')
+                cpm = camp.get('cpm')
+                views = camp.get('viewCount')
+                if budget and cpm and views and budget > 0:
+                    # Budget spent = (views * cpm) / 1000
+                    budget_spent = (views * cpm) / 1000
+                    budget_percent = (budget_spent / budget) * 100
+                    current_milestone = int(budget_percent // 10) * 10  # 0,10,20,...
+                    last_milestone = old.get('last_budget_milestone', 0)
+
+                    if current_milestone > last_milestone:
+                        await send_notification(chat_id,
+                            f"💰 Budget Milestone Reached\n"
+                            f"Campaign: {camp['name']}\n"
+                            f"{current_milestone}% of budget used\n"
+                            f"Spent: ${budget_spent:.2f} / ${budget}"
+                        )
+                        camp['last_budget_milestone'] = current_milestone
+                        campaigns_changed = True
+                else:
+                    camp['last_budget_milestone'] = old.get('last_budget_milestone', 0)
     else:
         campaigns_changed = True
+        # First poll – initialize budget milestone to 0
+        for camp in new_camp_dict.values():
+            camp['last_budget_milestone'] = 0
 
-    # ---- CLIP NOTIFICATIONS ----
+    # ---- CLIP NOTIFICATIONS (unchanged) ----
     clips_changed = False
     if not is_first_poll:
         for clip_id, clip in new_clip_dict.items():
