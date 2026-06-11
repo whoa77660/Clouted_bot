@@ -41,19 +41,20 @@ async def run_monitor_loop():
         await check_all_users()
         await asyncio.sleep(POLL_INTERVAL_MINUTES * 60)
 
-async def main():
+if __name__ == '__main__':
     # 1. Start health server in daemon thread
     threading.Thread(target=run_health_server, daemon=True).start()
 
     # 2. Start keep‑alive pinger in daemon thread
     threading.Thread(target=keep_alive, daemon=True).start()
 
-    # 3. Start manual monitor loop as background asyncio task
-    asyncio.create_task(run_monitor_loop())
+    # 3. Create and set the event loop (Python 3.14+ safe)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
-    # 4. Start Telegram bot (blocking)
+    # 4. Schedule the monitor loop as a background task
+    loop.create_task(run_monitor_loop())
+
+    # 5. Start Telegram bot (this blocks, uses the same loop)
     print("Bot started. Polling every", POLL_INTERVAL_MINUTES, "minutes.")
-    await application.run_polling()
-
-if __name__ == '__main__':
-    asyncio.run(main())
+    application.run_polling()
