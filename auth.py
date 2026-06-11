@@ -10,25 +10,29 @@ BROWSER_HEADERS = {
     'Referer': 'https://app.clouted.com/profile',
 }
 
+COOKIE_NAME = "__Secure-better-auth.session_token="
+
 def validate_and_save_cookie(chat_id: int, cookie_input: str):
-    # If the input doesn't contain '=' or ';', treat it as a raw token and prepend the cookie name
-    if '=' not in cookie_input and ';' not in cookie_input:
-        cookie_input = f"__Secure-better-auth.session_token={cookie_input.strip()}"
+    # Decode URL-encoded characters
+    cookie_input = unquote(cookie_input.strip())
 
-    # Strip and URL-decode (handles %2B → +, %2F → /, %3D → =, etc.)
-    cookie_header = unquote(cookie_input.strip())
-
-    # Debug: show the final cookie header (hide token partially for safety)
-    token_part = cookie_header.split('=', 1)[-1][:10] + '...'
-    print(f"[VALIDATE] Decoded cookie header: __Secure-better-auth.session_token={token_part}")
+    # If the input doesn't contain ';' (so it's a single cookie) and
+    # doesn't already start with the expected cookie name, prepend it.
+    if ';' not in cookie_input and not cookie_input.startswith(COOKIE_NAME):
+        cookie_header = COOKIE_NAME + cookie_input
+    else:
+        cookie_header = cookie_input
 
     headers = BROWSER_HEADERS.copy()
     headers['Cookie'] = cookie_header
 
+    # Debug: show partial token
+    token_part = cookie_header.split('=', 1)[-1][:10] + '...'
+    print(f"[VALIDATE] Using cookie: __Secure-better-auth.session_token={token_part}")
+
     try:
         resp = requests.get(f'{CLOUTED_BASE_URL}/api/auth/get-session', headers=headers)
 
-        # Detailed log
         print(f"[VALIDATE] Status: {resp.status_code}")
         print(f"[VALIDATE] Content-Type: {resp.headers.get('Content-Type','unknown')}")
         print(f"[VALIDATE] Body (first 300 chars): {resp.text[:300]}")
@@ -48,7 +52,6 @@ def validate_and_save_cookie(chat_id: int, cookie_input: str):
         if not session or not user:
             return False, f"❌ Session/user missing."
 
-        # Store everything
         get_user_settings_ref(chat_id).set({
             'clouted_cookie': cookie_header,
             'userId': user['id'],
