@@ -241,7 +241,10 @@ def format_campaign_card(camp: dict, chat_id: int) -> str:
 # ═══════════════════════════════════════════════
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    if not get_user_settings_ref(chat_id).get().get('lang'):
+    settings = get_user_settings_ref(chat_id).get() or {}   # safe fallback to {}
+
+    if not settings.get('lang'):
+        # No language set yet – show language selection
         await update.message.reply_text(
             "Please choose your language / অনুগ্রহ করে আপনার ভাষা নির্বাচন করুন:",
             reply_markup=get_language_keyboard()
