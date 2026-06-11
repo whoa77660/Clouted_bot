@@ -29,7 +29,7 @@ async def check_changes_for_user(chat_id: int):
     if not isinstance(fresh_campaigns, list) or not isinstance(fresh_clips, list):
         return
 
-    # ---- Attach progress to each campaign ----
+    # Attach progress to campaigns
     for camp in fresh_campaigns:
         uuid = camp.get('uuid')
         if uuid:
@@ -48,90 +48,99 @@ async def check_changes_for_user(chat_id: int):
 
     campaigns_changed = False
 
-    # ---- Campaign alerts (status + progress) ----
+    # ---- CAMPAIGN NOTIFICATIONS ----
     if not is_first_poll:
         for uuid, camp in new_camp_dict.items():
             old = old_campaigns.get(uuid)
             if old is None:
-                # New campaign – no explicit notification (you requested no “new campaign” spam)
-                pass
+                # New campaign
+                await send_notification(chat_id,
+                    f"🆕 New Campaign\n"
+                    f"Name: {camp['name']}\n"
+                    f"Status: {camp['status']}\n"
+                    f"CPM: {camp.get('cpm','?')}\n"
+                    f"Participants: {camp.get('participantCount','?')}"
+                )
+                print(f"[NEW CAMPAIGN] {camp['name']} ({uuid})")
+                campaigns_changed = True
             else:
-                # 1. Status change (paused / resumed / etc.)
+                # Check status change
                 if camp['status'] != old['status']:
                     emoji = "▶️" if camp['status'] == 'active' else ("⏸️" if camp['status'] == 'paused' else "🔄")
                     await send_notification(chat_id,
                         f"{emoji} Campaign Status Changed\n"
-                        f"Campaign: {camp['name']}\n"
+                        f"Name: {camp['name']}\n"
                         f"Old: {old['status']} → New: {camp['status']}"
                     )
+                    print(f"[STATUS CHANGE] {camp['name']}: {old['status']} → {camp['status']}")
                     campaigns_changed = True
 
-                # 2. Progress change
-                old_progress = old.get('progress') or {}
-                new_progress = camp.get('progress') or {}
-                old_pct = old_progress.get('percentage') if isinstance(old_progress, dict) else old_progress
-                new_pct = new_progress.get('percentage') if isinstance(new_progress, dict) else new_progress
-
-                if old_pct != new_pct and old_pct is not None and new_pct is not None:
-                    # Fetch extra progress fields for detail
-                    detail = ""
-                    if isinstance(new_progress, dict):
-                        # Add any other useful fields (example: completed steps)
-                        steps = new_progress.get('completedSteps') or new_progress.get('steps')
-                        if steps is not None:
-                            detail += f"Steps: {steps}\n"
-                    await send_notification(chat_id,
-                        f"📊 Campaign Progress Updated\n"
-                        f"Campaign: {camp['name']}\n"
-                        f"Progress: {old_pct}% → {new_pct}%\n"
-                        f"{detail}"
-                    )
-                    campaigns_changed = True
+                # Progress change
+                old_progress = old.get('progress')
+                new_progress = camp.get('progress')
+                if old_progress and new_progress:
+                    old_pct = old_progress.get('percentage') if isinstance(old_progress, dict) else old_progress
+                    new_pct = new_progress.get('percentage') if isinstance(new_progress, dict) else new_progress
+                    if old_pct != new_pct:
+                        await send_notification(chat_id,
+                            f"📊 Campaign Progress Updated\n"
+                            f"Campaign: {camp['name']}\n"
+                            f"Progress: {old_pct}% → {new_pct}%"
+                        )
+                        print(f"[PROGRESS] {camp['name']}: {old_pct}% → {new_pct}%")
+                        campaigns_changed = True
     else:
-        campaigns_changed = True   # first poll – store everything silently
+        campaigns_changed = True
 
-    # ---- Clip alerts (status + view count) ----
+    # ---- CLIP NOTIFICATIONS (unchanged) ----
     clips_changed = False
     if not is_first_poll:
         for clip_id, clip in new_clip_dict.items():
             old = old_clips.get(clip_id)
             if old is None:
-                # New clip
-                if clip['status'] == 'healthy':
-                    await send_notification(chat_id,
-                        f"✅ Clip Approved\n"
-                        f"Campaign: {clip['campaignName']}\n"
-                        f"Video: {clip.get('url', 'No link')}\n"
-                        f"Views: {clip['views']}\n"
-                        f"Earnings: {clip['earningsCents']} cents"
-                    )
-                else:
-                    await send_notification(chat_id,
-                        f"❌ Clip Rejected\n"
-                        f"Campaign: {clip['campaignName']}\n"
-                        f"Video: {clip.get('url', 'No link')}\n"
-                        f"Reason: {clip.get('flagReason', 'No reason given')}"
-                    )
+                status = clip.get('status', 'unknown')
+                emoji, label = {
+                    'healthy':  ('✅', 'Clip Approved'),
+                    'flagged':  ('❌', 'Clip Rejected'),
+                    'pending':  ('📝', 'Clip Pending Review'),
+                    'rejected': ('❌', 'Clip Rejected'),
+                }.get(status, ('❓', f'Clip Status: {status}'))
+                text = (
+                    f"{emoji} {label}\n"
+                    f"Campaign: {clip['campaignName']}\n"
+                    f"Video: {clip.get('url', 'No link')}\n"
+                    f"Views: {clip.get('views', 0)}\n"
+                    f"Earnings: {clip.get('earningsCents', 0)} cents"
+                )
+                if status == 'flagged':
+                    text += f"\nReason: {clip.get('flagReason', 'No reason given')}"
+                await send_notification(chat_id, text)
                 clips_changed = True
             else:
-                # Status change
                 if clip['status'] != old['status']:
-                    if clip['status'] == 'flagged':
+                    old_status = old.get('status', '?')
+                    new_status = clip.get('status', '?')
+                    if new_status == 'flagged':
                         await send_notification(chat_id,
-                            f"❌ Clip Rejected (status change)\n"
+                            f"❌ Clip Rejected (was {old_status})\n"
                             f"Campaign: {clip['campaignName']}\n"
                             f"Video: {clip.get('url', 'No link')}\n"
                             f"Reason: {clip.get('flagReason', 'No reason given')}"
                         )
-                    else:
+                    elif new_status == 'healthy':
                         await send_notification(chat_id,
-                            f"✅ Clip Approved (was flagged)\n"
+                            f"✅ Clip Approved (was {old_status})\n"
                             f"Campaign: {clip['campaignName']}\n"
                             f"Video: {clip.get('url', 'No link')}"
                         )
+                    else:
+                        await send_notification(chat_id,
+                            f"🔄 Clip Status Changed\n"
+                            f"Campaign: {clip['campaignName']}\n"
+                            f"Video: {clip.get('url', 'No link')}\n"
+                            f"Old: {old_status} → New: {new_status}"
+                        )
                     clips_changed = True
-
-                # View count change (per clip)
                 if clip.get('views', 0) != old.get('views', 0):
                     await send_notification(chat_id,
                         f"👀 Clip Views Updated\n"
@@ -141,9 +150,9 @@ async def check_changes_for_user(chat_id: int):
                     )
                     clips_changed = True
     else:
-        clips_changed = True   # first poll – store silently
+        clips_changed = True
 
-    # ---- Overall stats (earnings / total views) ----
+    # ---- OVERALL STATS ----
     total_earnings = sum(c.get('earningsCents', 0) for c in fresh_clips)
     total_views = sum(c.get('views', 0) for c in fresh_clips)
     total_clips = len(fresh_clips)
@@ -159,7 +168,7 @@ async def check_changes_for_user(chat_id: int):
             f"Clips: {old_stats.get('totalClips', 0)} → {total_clips}"
         )
 
-    # ---- Write to Firebase ----
+    # ---- SAVE TO FIREBASE ----
     if campaigns_changed:
         get_user_state_ref(chat_id, 'campaigns').set(new_camp_dict)
     if clips_changed:
@@ -171,8 +180,11 @@ async def check_changes_for_user(chat_id: int):
     })
     get_user_state_ref(chat_id, 'first_poll_done').set(True)
 
+    print(f"[MONITOR] User {chat_id}: campaigns={len(fresh_campaigns)}, clips={len(fresh_clips)}")
+
 
 async def check_all_users():
     users = get_all_users()
+    print(f"[MONITOR] Checking {len(users)} user(s)...")
     for chat_id in users:
         await check_changes_for_user(chat_id)
