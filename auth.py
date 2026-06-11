@@ -1,5 +1,5 @@
 import requests
-from urllib.parse import unquote   # <-- new import
+from urllib.parse import unquote
 from config import CLOUTED_BASE_URL
 from firebase_db import get_user_settings_ref
 
@@ -18,13 +18,17 @@ def validate_and_save_cookie(chat_id: int, cookie_input: str):
     # Strip and URL-decode (handles %2B → +, %2F → /, %3D → =, etc.)
     cookie_header = unquote(cookie_input.strip())
 
+    # Debug: show the final cookie header (hide token partially for safety)
+    token_part = cookie_header.split('=', 1)[-1][:10] + '...'
+    print(f"[VALIDATE] Decoded cookie header: __Secure-better-auth.session_token={token_part}")
+
     headers = BROWSER_HEADERS.copy()
     headers['Cookie'] = cookie_header
 
     try:
         resp = requests.get(f'{CLOUTED_BASE_URL}/api/auth/get-session', headers=headers)
-        
-        # Debug output
+
+        # Detailed log
         print(f"[VALIDATE] Status: {resp.status_code}")
         print(f"[VALIDATE] Content-Type: {resp.headers.get('Content-Type','unknown')}")
         print(f"[VALIDATE] Body (first 300 chars): {resp.text[:300]}")
@@ -53,7 +57,7 @@ def validate_and_save_cookie(chat_id: int, cookie_input: str):
             'username': user.get('name', 'Unknown'),
             'cookie_invalid': False
         })
-        return True, f"      Logged in as {user.get('name', 'Unknown')} (userId: {user['id']})"
+        return True, f"✅ Logged in as {user.get('name', 'Unknown')} (userId: {user['id']})"
 
     except requests.exceptions.RequestException as e:
         return False, f"❌ Request failed: {str(e)}"
