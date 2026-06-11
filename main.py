@@ -7,14 +7,10 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from bot import application
 from monitor import check_all_users
 
-POLL_INTERVAL_MINUTES = 5
+POLL_INTERVAL_MINUTES = 1   # 1 for testing, change to 5 later
 PORT = int(os.environ.get("PORT", 10000))
 
-# --- Periodic monitor function (called by JobQueue) ---
-async def periodic_monitor(context):
-    await check_all_users()
-
-# --- Minimal HTTP handler for Render health checks ---
+# --- Health server for Render port binding ---
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -26,8 +22,8 @@ def run_health_server():
     print(f"Health server listening on port {PORT}")
     server.serve_forever()
 
-# --- Keep‑alive pinger (replace with your actual Render URL) ---
-RENDER_URL = "https://clouted-bot.onrender.com/"   # ← replace me!
+# --- Keep‑alive pinger (uses external URL to prevent sleep) ---
+RENDER_URL = "https://clouted-bot.onrender.com/"   # replace with your exact Render URL
 
 def keep_alive():
     while True:
@@ -38,22 +34,26 @@ def keep_alive():
             print(f"Self Ping Error: {e}")
         time.sleep(49)
 
-# --- Start everything ---
-if __name__ == '__main__':
-    # 1. Health server thread
+# --- Manual monitoring loop (runs every POLL_INTERVAL_MINUTES) ---
+async def run_monitor_loop():
+    while True:
+        print("[MONITOR] Starting poll...")
+        await check_all_users()
+        await asyncio.sleep(POLL_INTERVAL_MINUTES * 60)
+
+async def main():
+    # 1. Start health server in daemon thread
     threading.Thread(target=run_health_server, daemon=True).start()
 
-    # 2. Keep‑alive thread
+    # 2. Start keep‑alive pinger in daemon thread
     threading.Thread(target=keep_alive, daemon=True).start()
 
-    # 3. Telegram bot
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    # 3. Start manual monitor loop as background asyncio task
+    asyncio.create_task(run_monitor_loop())
 
-    application.job_queue.run_repeating(
-        periodic_monitor,
-        interval=POLL_INTERVAL_MINUTES * 60,
-        first=0
-    )
+    # 4. Start Telegram bot (blocking)
     print("Bot started. Polling every", POLL_INTERVAL_MINUTES, "minutes.")
-    application.run_polling()
+    await application.run_polling()
+
+if __name__ == '__main__':
+    asyncio.run(main())
