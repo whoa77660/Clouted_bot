@@ -5,15 +5,13 @@ import logging
 import traceback
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from config import TELEGRAM_BOT_TOKEN
+from config import TELEGRAM_BOT_TOKEN, OWNER_ID   # ← import OWNER_ID from config
 from firebase_db import (
     get_user_state_ref, get_user_settings_ref, get_cookie_invalid_flag,
     get_all_users
 )
 from auth import validate_and_save_cookie
 from api_client import fetch_campaigns
-
-OWNER_ID = 5020599583
 
 application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
@@ -371,16 +369,15 @@ async def videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     for clip_id, clip in clips.items():
-        # Correct emoji for each status
         status = clip.get('status', 'unknown')
         if status == 'healthy':
             status_emoji = "✅"
         elif status in ('flagged', 'rejected'):
             status_emoji = "❌"
         elif status == 'pending':
-            status_emoji = "🕒"       # waiting / under review
+            status_emoji = "🕒"
         else:
-            status_emoji = "❓"       # unknown status
+            status_emoji = "❓"
 
         campaign = html.escape(str(clip.get('campaignName', 'Unknown')))
         views = html.escape(str(clip.get('views', 0)))
