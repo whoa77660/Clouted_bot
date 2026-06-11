@@ -53,7 +53,7 @@ def validate_and_save_cookie(chat_id: int, cookie_input: str):
             'username': user.get('name', 'Unknown'),
             'cookie_invalid': False
         })
-        return True, f"✅ Logged in as {user.get('name', 'Unknown')} (userId: {user['id']})"
+        return True, f"✅      Logged in as {user.get('name', 'Unknown')} (userId: {user['id']})"
 
     except requests.exceptions.RequestException as e:
         return False, f"❌ Request failed: {str(e)}"
