@@ -7,7 +7,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from bot import application
 from monitor import check_all_users
 
-POLL_INTERVAL_MINUTES = 1   # 1 for testing, change to 5 later
+POLL_INTERVAL_MINUTES = 5   # 1 for testing, change to 5 later
 PORT = int(os.environ.get("PORT", 10000))
 
 # --- Health server for Render port binding ---
