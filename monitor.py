@@ -49,7 +49,7 @@ async def check_changes_for_user(chat_id: int):
 
     campaigns_changed = False
 
-    # ---- CAMPAIGN NOTIFICATIONS (status + progress + budget milestones) ----
+    # ---- CAMPAIGN NOTIFICATIONS ----
     if not is_first_poll:
         for uuid, camp in new_camp_dict.items():
             old = old_campaigns.get(uuid)
@@ -62,8 +62,9 @@ async def check_changes_for_user(chat_id: int):
                     f"CPM: {camp.get('cpm','?')}\n"
                     f"Participants: {camp.get('participantCount','?')}"
                 )
+                print(f"[NEW CAMPAIGN] {camp['name']} ({uuid})")
                 campaigns_changed = True
-                # Initialize budget milestone tracking for the new campaign
+                # Initialize budget milestone for new campaign
                 camp['last_budget_milestone'] = 0
             else:
                 # Status change
@@ -74,6 +75,7 @@ async def check_changes_for_user(chat_id: int):
                         f"Name: {camp['name']}\n"
                         f"Old: {old['status']} → New: {camp['status']}"
                     )
+                    print(f"[STATUS CHANGE] {camp['name']}: {old['status']} → {camp['status']}")
                     campaigns_changed = True
 
                 # Progress change (from campaign.progress)
@@ -88,6 +90,7 @@ async def check_changes_for_user(chat_id: int):
                             f"Campaign: {camp['name']}\n"
                             f"Progress: {old_pct}% → {new_pct}%"
                         )
+                        print(f"[PROGRESS] {camp['name']}: {old_pct}% → {new_pct}%")
                         campaigns_changed = True
 
                 # --- Budget Milestone Calculation ---
@@ -95,10 +98,9 @@ async def check_changes_for_user(chat_id: int):
                 cpm = camp.get('cpm')
                 views = camp.get('viewCount')
                 if budget and cpm and views and budget > 0:
-                    # Budget spent = (views * cpm) / 1000
                     budget_spent = (views * cpm) / 1000
                     budget_percent = (budget_spent / budget) * 100
-                    current_milestone = int(budget_percent // 10) * 10  # 0,10,20,...
+                    current_milestone = int(budget_percent // 10) * 10   # 0,10,20,...
                     last_milestone = old.get('last_budget_milestone', 0)
 
                     if current_milestone > last_milestone:
@@ -106,24 +108,26 @@ async def check_changes_for_user(chat_id: int):
                             f"💰 Budget Milestone Reached\n"
                             f"Campaign: {camp['name']}\n"
                             f"{current_milestone}% of budget used\n"
-                            f"Spent: ${budget_spent:.2f} / ${budget}"
+                            f"Spent: ${budget_spent:.2f} / ${budget / 100:.2f}"
                         )
+                        print(f"[BUDGET MILESTONE] {camp['name']}: {current_milestone}%")
                         camp['last_budget_milestone'] = current_milestone
                         campaigns_changed = True
                 else:
                     camp['last_budget_milestone'] = old.get('last_budget_milestone', 0)
     else:
         campaigns_changed = True
-        # First poll – initialize budget milestone to 0
+        # First poll: initialize budget milestone to 0
         for camp in new_camp_dict.values():
             camp['last_budget_milestone'] = 0
 
-    # ---- CLIP NOTIFICATIONS (unchanged) ----
+    # ---- CLIP NOTIFICATIONS ----
     clips_changed = False
     if not is_first_poll:
         for clip_id, clip in new_clip_dict.items():
             old = old_clips.get(clip_id)
             if old is None:
+                # New clip
                 status = clip.get('status', 'unknown')
                 emoji, label = {
                     'healthy':  ('✅', 'Clip Approved'),
@@ -136,13 +140,14 @@ async def check_changes_for_user(chat_id: int):
                     f"Campaign: {clip['campaignName']}\n"
                     f"Video: {clip.get('url', 'No link')}\n"
                     f"Views: {clip.get('views', 0)}\n"
-                    f"Earnings: {clip.get('earningsCents', 0)} cents"
+                    f"Earnings: ${clip.get('earningsCents', 0) / 100:.2f}"   # dollars
                 )
                 if status == 'flagged':
                     text += f"\nReason: {clip.get('flagReason', 'No reason given')}"
                 await send_notification(chat_id, text)
                 clips_changed = True
             else:
+                # Status change
                 if clip['status'] != old['status']:
                     old_status = old.get('status', '?')
                     new_status = clip.get('status', '?')
@@ -167,6 +172,8 @@ async def check_changes_for_user(chat_id: int):
                             f"Old: {old_status} → New: {new_status}"
                         )
                     clips_changed = True
+
+                # View count change (per clip)
                 if clip.get('views', 0) != old.get('views', 0):
                     await send_notification(chat_id,
                         f"👀 Clip Views Updated\n"
@@ -176,20 +183,23 @@ async def check_changes_for_user(chat_id: int):
                     )
                     clips_changed = True
     else:
-        clips_changed = True
+        clips_changed = True   # first poll – store silently
 
-    # ---- OVERALL STATS ----
-    total_earnings = sum(c.get('earningsCents', 0) for c in fresh_clips)
+    # ---- OVERALL STATS (in dollars) ----
+    total_earnings_cents = sum(c.get('earningsCents', 0) for c in fresh_clips)
     total_views = sum(c.get('views', 0) for c in fresh_clips)
     total_clips = len(fresh_clips)
 
-    if not is_first_poll and (total_earnings != old_stats.get('totalEarningsCents') or
+    old_dollars = f"${old_stats.get('totalEarningsCents', 0) / 100:.2f}"
+    new_dollars = f"${total_earnings_cents / 100:.2f}"
+
+    if not is_first_poll and (total_earnings_cents != old_stats.get('totalEarningsCents') or
         total_views != old_stats.get('totalViews') or
         total_clips != old_stats.get('totalClips')):
         await send_notification(chat_id,
             f"💰 Earnings Updated\n"
-            f"Old: {old_stats.get('totalEarningsCents', 0)} cents\n"
-            f"New: {total_earnings} cents\n"
+            f"Old: {old_dollars}\n"
+            f"New: {new_dollars}\n"
             f"Views: {old_stats.get('totalViews', 0)} → {total_views}\n"
             f"Clips: {old_stats.get('totalClips', 0)} → {total_clips}"
         )
@@ -202,7 +212,7 @@ async def check_changes_for_user(chat_id: int):
     get_user_state_ref(chat_id, 'stats').set({
         'totalViews': total_views,
         'totalClips': total_clips,
-        'totalEarningsCents': total_earnings
+        'totalEarningsCents': total_earnings_cents
     })
     get_user_state_ref(chat_id, 'first_poll_done').set(True)
 
