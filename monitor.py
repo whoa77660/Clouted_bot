@@ -96,16 +96,17 @@ async def check_changes_for_user(chat_id: int):
                 cpm = camp.get('cpm')
                 views = camp.get('viewCount')
                 if budget and cpm and views and budget > 0:
-                    budget_spent = (views * cpm) / 1000
+                    budget_spent = (views * cpm) / 1000          # in cents
                     budget_percent = (budget_spent / budget) * 100
                     current_milestone = int(budget_percent // 10) * 10
                     last_milestone = old.get('last_budget_milestone', 0)
                     if current_milestone > last_milestone:
+                        # FIXED: display spent and budget in dollars (divide by 100)
                         await send_notification(chat_id,
                             f"💰 Budget Milestone Reached\n"
                             f"Campaign: {camp['name']}\n"
                             f"{current_milestone}% of budget used\n"
-                            f"Spent: ${budget_spent:.2f} / ${budget / 100:.2f}"
+                            f"Spent: ${budget_spent / 100:.2f} / ${budget / 100:.2f}"
                         )
                         print(f"[BUDGET MILESTONE] {camp['name']}: {current_milestone}%")
                         camp['last_budget_milestone'] = current_milestone
@@ -122,8 +123,8 @@ async def check_changes_for_user(chat_id: int):
     if not is_first_poll:
         for clip_id, clip in new_clip_dict.items():
             old = old_clips.get(clip_id)
+            status = clip.get('status', 'unknown')
             if old is None:
-                status = clip.get('status', 'unknown')
                 emoji, label = {
                     'healthy':  ('✅', 'Clip Approved'),
                     'flagged':  ('❌', 'Clip Rejected'),
@@ -167,11 +168,14 @@ async def check_changes_for_user(chat_id: int):
                         )
                     clips_changed = True
 
+                # View count change – now includes current status
                 if clip.get('views', 0) != old.get('views', 0):
+                    status_emoji = {"healthy":"✅","flagged":"❌","pending":"🕒","rejected":"❌"}.get(status,"❓")
                     await send_notification(chat_id,
                         f"👀 Clip Views Updated\n"
                         f"Campaign: {clip['campaignName']}\n"
                         f"Video: {clip.get('url', 'No link')}\n"
+                        f"Status: {status_emoji} {status}\n"
                         f"Old: {old.get('views', 0)} → New: {clip.get('views', 0)}"
                     )
                     clips_changed = True
