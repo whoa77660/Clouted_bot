@@ -17,7 +17,7 @@ from api_client import fetch_campaigns
 application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
 # ═══════════════════════════════════════════════
-# GLOBAL ERROR HANDLER (unchanged)
+# GLOBAL ERROR HANDLER
 # ═══════════════════════════════════════════════
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logging.basicConfig(
@@ -58,7 +58,7 @@ def set_user_lang(chat_id, lang: str):
     get_user_settings_ref(chat_id).update({'lang': lang})
 
 # ═══════════════════════════════════════════════
-# TRANSLATIONS (updated with new keys)
+# TRANSLATIONS
 # ═══════════════════════════════════════════════
 T = {
     'en': {
@@ -105,12 +105,12 @@ T = {
         'profile_button': "👤 Profile",
         'help_button': "ℹ️ Help",
         'show_more_button': "📄 Show more 12 ({remaining} remaining)",
-        'next_campaign_button': "➡️ Next Campaign: {campaign}",
         'earnings': "Earnings",
         'video_url': "🔗 Video",
         'back_to_campaigns': "⬅️ Back to Campaigns",
         'select_campaign': "📁 Select a campaign to view its videos:",
         'back_button': "🔙 Back",
+        'back_to_main': "🔙 Back to main menu",
     },
     'bn': {
         'welcome': "👋 স্বাগতম! আমি আপনার Clouted অ্যাকাউন্ট মনিটর করি।\nঅ্যাকাউন্ট লিঙ্ক করতে /setcookie <আপনার_পূর্ণ_কুকি> ব্যবহার করুন।\nতারপর নিচের বোতামগুলি ব্যবহার করুন।",
@@ -156,12 +156,12 @@ T = {
         'profile_button': "👤 প্রোফাইল",
         'help_button': "ℹ️ সাহায্য",
         'show_more_button': "📄 আরও ১২ দেখুন ({remaining} বাকি)",
-        'next_campaign_button': "➡️ পরবর্তী ক্যাম্পেইন: {campaign}",
         'earnings': "আয়",
         'video_url': "🔗 ভিডিও",
         'back_to_campaigns': "⬅️ ক্যাম্পেইন তালিকায় ফিরুন",
         'select_campaign': "📁 ভিডিও দেখতে একটি ক্যাম্পেইন নির্বাচন করুন:",
         'back_button': "🔙 ফিরুন",
+        'back_to_main': "🔙 প্রধান মেনুতে ফিরুন",
     }
 }
 
@@ -272,7 +272,6 @@ def format_campaign_card(camp: dict, chat_id: int) -> str:
 # CAMPAIGN LIST KEYBOARD (for My Videos)
 # ═══════════════════════════════════════════════
 def get_campaign_list_keyboard(chat_id: int):
-    """Build a reply keyboard listing campaign names that have clips."""
     clips_dict = get_user_state_ref(chat_id, 'clips').get() or {}
     if not clips_dict:
         return None
@@ -281,7 +280,6 @@ def get_campaign_list_keyboard(chat_id: int):
     for clip in clips_dict.values():
         grouped[clip.get('campaignName', 'Unknown')].append(clip)
 
-    # Sort campaigns by most recent clip
     def campaign_sort_key(camp_name):
         clips = grouped[camp_name]
         latest = max(clips, key=lambda c: c.get('createdAt', ''))
@@ -289,7 +287,6 @@ def get_campaign_list_keyboard(chat_id: int):
 
     sorted_campaigns = sorted(grouped.keys(), key=campaign_sort_key, reverse=True)
 
-    # Build keyboard rows (max 2 columns)
     keyboard = []
     row = []
     for name in sorted_campaigns:
@@ -301,7 +298,6 @@ def get_campaign_list_keyboard(chat_id: int):
     if row:
         keyboard.append(row)
 
-    # Add Back button
     keyboard.append([_make_styled_button(t('back_button', chat_id), "danger")])
 
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -312,11 +308,9 @@ def get_campaign_list_keyboard(chat_id: int):
 VIDEOS_PER_PAGE = 12
 
 async def send_campaign_videos(update_or_query, context, chat_id: int, campaign_name: str, clip_offset: int = 0):
-    """Show videos for a specific campaign with pagination and Back button."""
     clips_dict = get_user_state_ref(chat_id, 'clips').get() or {}
     campaigns_dict = get_user_state_ref(chat_id, 'campaigns').get() or {}
 
-    # Filter clips for this campaign
     campaign_clips = [c for c in clips_dict.values() if c.get('campaignName') == campaign_name]
     campaign_clips.sort(key=lambda c: c.get('createdAt', ''), reverse=True)
 
@@ -326,14 +320,12 @@ async def send_campaign_videos(update_or_query, context, chat_id: int, campaign_
             await update_or_query.message.reply_text("No videos in this campaign.")
         return
 
-    # Campaign thumbnail
     campaign_info = None
     for cid, cdata in campaigns_dict.items():
         if cdata.get('name') == campaign_name:
             campaign_info = cdata
             break
 
-    # Determine message target
     message = None
     if isinstance(update_or_query, Update):
         if update_or_query.callback_query:
@@ -343,7 +335,6 @@ async def send_campaign_videos(update_or_query, context, chat_id: int, campaign_
     elif hasattr(update_or_query, 'reply_text'):
         message = update_or_query
 
-    # Send campaign header
     header_text = f"📌 <b>{html.escape(campaign_name)}</b>"
     if campaign_info and campaign_info.get('thumbnail'):
         try:
@@ -357,7 +348,6 @@ async def send_campaign_videos(update_or_query, context, chat_id: int, campaign_
     else:
         await message.reply_text(header_text, parse_mode='HTML')
 
-    # Paginate clips
     start_idx = clip_offset
     end_idx = min(start_idx + VIDEOS_PER_PAGE, total_clips)
     page_clips = campaign_clips[start_idx:end_idx]
@@ -386,12 +376,10 @@ async def send_campaign_videos(update_or_query, context, chat_id: int, campaign_
         if url:
             text += f'🔗 <a href="{html.escape(url)}">Open Video</a>'
 
-        # No reply markup on individual cards – keyboard stays as campaign list
         await message.reply_text(text, parse_mode="HTML",
                                 disable_web_page_preview=True)
         await asyncio.sleep(0.3)
 
-    # Build inline buttons
     keyboard = []
     if end_idx < total_clips:
         remaining = total_clips - end_idx
@@ -412,13 +400,11 @@ async def send_campaign_videos(update_or_query, context, chat_id: int, campaign_
     reply_markup = InlineKeyboardMarkup(keyboard)
     await message.reply_text("⬇️ Options:", reply_markup=reply_markup)
 
-# ── Inline callback handler for campaign videos pagination ──
 async def campaign_video_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
     if data == "back_to_campaign_list":
-        # Restore campaign list keyboard
         chat_id = query.message.chat_id
         await query.message.delete()
         await show_campaign_list(update, context, chat_id)
@@ -438,20 +424,25 @@ async def campaign_video_callback(update: Update, context: ContextTypes.DEFAULT_
         pass
     await send_campaign_videos(update, context, chat_id, campaign_name, clip_offset)
 
-# ── Show campaign list keyboard ──
 async def show_campaign_list(update, context, chat_id):
+    """Show the campaign list keyboard, handling both commands and inline callbacks."""
     keyboard = get_campaign_list_keyboard(chat_id)
     if keyboard is None:
-        await update.message.reply_text(t('videos_empty', chat_id),
-                                        reply_markup=get_main_keyboard(chat_id))
+        msg = t('videos_empty', chat_id)
+        if hasattr(update, 'callback_query') and update.callback_query:
+            await update.callback_query.message.reply_text(msg,
+                                                           reply_markup=get_main_keyboard(chat_id))
+        else:
+            await update.message.reply_text(msg,
+                                            reply_markup=get_main_keyboard(chat_id))
         return
 
-    await update.message.reply_text(
-        t('select_campaign', chat_id),
-        reply_markup=keyboard
-    )
+    text = t('select_campaign', chat_id)
+    if hasattr(update, 'callback_query') and update.callback_query:
+        await update.callback_query.message.reply_text(text, reply_markup=keyboard)
+    else:
+        await update.message.reply_text(text, reply_markup=keyboard)
 
-# ── Updated videos command (shows campaign list) ──
 async def videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     settings = get_user_settings_ref(chat_id).get() or {}
@@ -606,7 +597,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     chat_id = update.effective_chat.id
 
-    # Language selection
     if text == "English":
         set_user_lang(chat_id, 'en')
         await update.message.reply_text("✅ Language set to English.", reply_markup=get_main_keyboard(chat_id))
@@ -616,14 +606,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ ভাষা বাংলায় সেট করা হয়েছে।", reply_markup=get_main_keyboard(chat_id))
         return
 
-    # Main keyboard buttons
     if text == t("lang_button", chat_id):
         await update.message.reply_text(
             "Choose language / ভাষা নির্বাচন করুন:",
             reply_markup=get_language_keyboard()
         )
         return
-    elif text == t("stats_button", chat_id):
+
+    if text == t("stats_button", chat_id):
         await stats(update, context)
         return
     elif text == t("campaigns_button", chat_id):
@@ -639,22 +629,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await help_cmd(update, context)
         return
 
-    # Back button from campaign list
+    # Back button from campaign list → return to main menu
     if text == t("back_button", chat_id):
         await update.message.reply_text(
-            t('welcome', chat_id),
+            t('back_to_main', chat_id),
             reply_markup=get_main_keyboard(chat_id)
         )
         return
 
-    # Check if user pressed a campaign name (on the campaign list keyboard)
+    # Campaign name pressed from campaign list
     clips_dict = get_user_state_ref(chat_id, 'clips').get() or {}
     if clips_dict:
         grouped = defaultdict(list)
         for clip in clips_dict.values():
             grouped[clip.get('campaignName', 'Unknown')].append(clip)
         if text in grouped:
-            # Show videos for that campaign
             await send_campaign_videos(update, context, chat_id, campaign_name=text, clip_offset=0)
             return
 
