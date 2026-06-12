@@ -91,24 +91,25 @@ async def check_changes_for_user(chat_id: int):
                         print(f"[PROGRESS] {camp['name']}: {old_pct}% → {new_pct}%")
                         campaigns_changed = True
 
-                # Budget milestone
+                # Budget milestone – now shows actual current % and clearly states the crossed milestone
                 budget = camp.get('budget')
                 cpm = camp.get('cpm')
                 views = camp.get('viewCount')
                 if budget and cpm and views and budget > 0:
-                    budget_spent = (views * cpm) / 1000          # in cents
-                    budget_percent = (budget_spent / budget) * 100
-                    current_milestone = int(budget_percent // 10) * 10
+                    budget_spent = (views * cpm) / 1000            # in cents
+                    current_pct = (budget_spent / budget) * 100
+                    current_milestone = int(current_pct // 10) * 10
                     last_milestone = old.get('last_budget_milestone', 0)
+
                     if current_milestone > last_milestone:
-                        # FIXED: display spent and budget in dollars (divide by 100)
                         await send_notification(chat_id,
                             f"💰 Budget Milestone Reached\n"
                             f"Campaign: {camp['name']}\n"
-                            f"{current_milestone}% of budget used\n"
-                            f"Spent: ${budget_spent / 100:.2f} / ${budget / 100:.2f}"
+                            f"🎯 Crossed {current_milestone}% milestone\n"
+                            f"📊 Current usage: {current_pct:.1f}%\n"
+                            f"💸 Spent: ${budget_spent / 100:.2f} / ${budget / 100:.2f}"
                         )
-                        print(f"[BUDGET MILESTONE] {camp['name']}: {current_milestone}%")
+                        print(f"[BUDGET MILESTONE] {camp['name']}: {current_milestone}% (actual {current_pct:.1f}%)")
                         camp['last_budget_milestone'] = current_milestone
                         campaigns_changed = True
                 else:
