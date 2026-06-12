@@ -3,6 +3,7 @@ import html
 import json
 import logging
 import traceback
+from collections import defaultdict
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from config import TELEGRAM_BOT_TOKEN, OWNER_ID
@@ -57,7 +58,7 @@ def set_user_lang(chat_id, lang: str):
     get_user_settings_ref(chat_id).update({'lang': lang})
 
 # ═══════════════════════════════════════════════
-# TRANSLATIONS
+# TRANSLATIONS (unchanged)
 # ═══════════════════════════════════════════════
 T = {
     'en': {
@@ -260,15 +261,19 @@ def format_campaign_card(camp: dict, chat_id: int) -> str:
     return card
 
 # ═══════════════════════════════════════════════
-# VIDEOS – OLD STYLE CARDS + PAGINATION (sorted newest first)
+# VIDEOS – GROUPED BY CAMPAIGN + SORTED NEWEST FIRST
 # ═══════════════════════════════════════════════
 VIDEOS_PER_PAGE = 12
 
-async def send_videos_page(update_or_query, context, chat_id: int, offset: int = 0):
+async def send_videos_page(update_or_query, context, chat_id: int, campaign_name: str = None, offset: int = 0):
+    """
+    Sends videos grouped by campaign. If a specific campaign is requested,
+    shows only that campaign's videos with pagination.
+    """
     clips_dict = get_user_state_ref(chat_id, 'clips').get() or {}
-    total = len(clips_dict)
+    campaigns_dict = get_user_state_ref(chat_id, 'campaigns').get() or {}
 
-    if total == 0:
+    if not clips_dict:
         if hasattr(update_or_query, 'message') and update_or_query.message:
             await update_or_query.message.reply_text(t('videos_empty', chat_id),
                                                     reply_markup=get_main_keyboard(chat_id))
@@ -277,14 +282,22 @@ async def send_videos_page(update_or_query, context, chat_id: int, offset: int =
                                                                     reply_markup=get_main_keyboard(chat_id))
         return
 
-    # Sort clips by createdAt descending (newest first)
-    def get_created_at(clip):
-        return clip.get('createdAt', '') or ''
-    clips = sorted(clips_dict.values(), key=get_created_at, reverse=True)
+    # Group clips by campaign name
+    grouped = defaultdict(list)
+    for clip in clips_dict.values():
+        grouped[clip.get('campaignName', 'Unknown')].append(clip)
 
-    start = offset
-    end = min(offset + VIDEOS_PER_PAGE, total)
-    page_clips = clips[start:end]
+    # Sort groups by the date of the most recent clip in each group
+    def group_sort_key(camp_name):
+        clips = grouped[camp_name]
+        latest = max(clips, key=lambda c: c.get('createdAt', ''))
+        return latest.get('createdAt', '') or ''
+
+    sorted_campaign_names = sorted(grouped.keys(), key=group_sort_key, reverse=True)
+
+    # If a specific campaign is requested, filter to only that one
+    if campaign_name and campaign_name in grouped:
+        sorted_campaign_names = [campaign_name]
 
     message = None
     if isinstance(update_or_query, Update):
@@ -295,64 +308,98 @@ async def send_videos_page(update_or_query, context, chat_id: int, offset: int =
     elif hasattr(update_or_query, 'reply_text'):
         message = update_or_query
 
-    for clip in page_clips:
-        status = clip.get('status', 'unknown')
-        if status == 'healthy':
-            status_emoji = "✅"
-        elif status in ('flagged', 'rejected'):
-            status_emoji = "❌"
-        elif status == 'pending':
-            status_emoji = "🕒"
+    for camp_name in sorted_campaign_names:
+        clips = grouped[camp_name]
+        # Sort clips within this campaign newest first
+        clips.sort(key=lambda c: c.get('createdAt', ''), reverse=True)
+        total_clips = len(clips)
+
+        # Show campaign header (thumbnail + name)
+        campaign_info = None
+        for cid, cdata in campaigns_dict.items():
+            if cdata.get('name') == camp_name:
+                campaign_info = cdata
+                break
+
+        header_text = f"📌 <b>{html.escape(camp_name)}</b>"
+        if campaign_info and campaign_info.get('thumbnail'):
+            try:
+                await message.reply_photo(
+                    photo=campaign_info['thumbnail'],
+                    caption=header_text,
+                    parse_mode='HTML'
+                )
+            except:
+                await message.reply_text(header_text, parse_mode='HTML')
         else:
-            status_emoji = "❓"
+            await message.reply_text(header_text, parse_mode='HTML')
 
-        campaign = html.escape(str(clip.get('campaignName', 'Unknown')))
-        views = html.escape(str(clip.get('views', 0)))
-        earnings = cents_to_dollar(clip.get('earningsCents', 0))
-        url = clip.get('url', '')
+        # Show clips of this campaign (paginated if needed)
+        start_idx = offset if campaign_name == campaign_name else 0  # offset only for the specific campaign
+        end_idx = min(start_idx + VIDEOS_PER_PAGE, total_clips)
+        page_clips = clips[start_idx:end_idx]
 
-        text = (
-            f"{status_emoji} {t('video_status_title', chat_id)}\n"
-            f"{t('campaign_card_status', chat_id)}: <code>{status}</code>\n"
-            f"{t('stats_views', chat_id)}: <code>{views}</code>\n"
-            f"{t('earnings', chat_id)}: <code>{earnings}</code>\n"
-        )
-        if url:
-            text += f'🔗 <a href="{html.escape(url)}">Open Video</a>'
+        for clip in page_clips:
+            status = clip.get('status', 'unknown')
+            if status == 'healthy':
+                status_emoji = "✅"
+            elif status in ('flagged', 'rejected'):
+                status_emoji = "❌"
+            elif status == 'pending':
+                status_emoji = "🕒"
+            else:
+                status_emoji = "❓"
 
-        if message:
+            views = html.escape(str(clip.get('views', 0)))
+            earnings = cents_to_dollar(clip.get('earningsCents', 0))
+            url = clip.get('url', '')
+
+            text = (
+                f"{status_emoji} {t('video_status_title', chat_id)}\n"
+                f"{t('campaign_card_status', chat_id)}: <code>{status}</code>\n"
+                f"{t('stats_views', chat_id)}: <code>{views}</code>\n"
+                f"{t('earnings', chat_id)}: <code>{earnings}</code>\n"
+            )
+            if url:
+                text += f'🔗 <a href="{html.escape(url)}">Open Video</a>'
+
             await message.reply_text(text, parse_mode="HTML",
                                     disable_web_page_preview=True,
                                     reply_markup=get_main_keyboard(chat_id))
-        await asyncio.sleep(0.3)
+            await asyncio.sleep(0.3)
 
-    if end < total:
-        remaining = total - end
-        keyboard = [[
-            InlineKeyboardButton(
-                t('show_more_button', chat_id).format(remaining=remaining),
-                callback_data=f"videos_page_{end}"
-            )
-        ]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        if message:
-            await message.reply_text("📄 More videos available:", reply_markup=reply_markup)
-        else:
-            await context.bot.send_message(chat_id, "📄 More videos available:", reply_markup=reply_markup)
+        # Show "More" button if this campaign has more clips
+        if end_idx < total_clips:
+            remaining = total_clips - end_idx
+            keyboard = [[
+                InlineKeyboardButton(
+                    t('show_more_button', chat_id).format(remaining=remaining),
+                    callback_data=f"videos_{camp_name}_{end_idx}"
+                )
+            ]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await message.reply_text(f"📄 More videos in {html.escape(camp_name)}:", reply_markup=reply_markup)
+
+        # After finishing one campaign, reset offset for next campaign
+        offset = 0
 
 async def video_pagination_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-    if not data.startswith("videos_page_"):
+    if not data.startswith("videos_"):
         return
-    offset = int(data.split("_")[-1])
+    parts = data.split("_", 2)
+    if len(parts) < 3:
+        return
+    campaign_name = parts[1]
+    offset = int(parts[2])
     chat_id = query.message.chat_id
     try:
         await query.message.delete()
     except:
         pass
-    await send_videos_page(update, context, chat_id, offset=offset)
+    await send_videos_page(update, context, chat_id, campaign_name=campaign_name, offset=offset)
 
 async def videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -367,10 +414,10 @@ async def videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                         reply_markup=get_main_keyboard(chat_id))
         return
 
-    await send_videos_page(update, context, chat_id, offset=0)
+    await send_videos_page(update, context, chat_id)
 
 # ═══════════════════════════════════════════════
-# OTHER COMMAND HANDLERS
+# OTHER COMMAND HANDLERS (unchanged except campaigns now sends images)
 # ═══════════════════════════════════════════════
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -453,7 +500,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += t('cookie_invalid_warn', chat_id)
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=get_main_keyboard(chat_id))
 
-# ── UPDATED CAMPAIGNS HANDLER (with thumbnail images) ──
+# ── CAMPAIGNS WITH THUMBNAIL ──
 async def campaigns(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     camps = None
@@ -485,7 +532,6 @@ async def campaigns(update: Update, context: ContextTypes.DEFAULT_TYPE):
         card = format_campaign_card(camp, chat_id)
         thumbnail_url = camp.get('thumbnail')
 
-        # If the campaign has a thumbnail image, send it as a photo with the card as caption
         if thumbnail_url and thumbnail_url.startswith('http'):
             try:
                 await context.bot.send_photo(
@@ -496,7 +542,6 @@ async def campaigns(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=get_main_keyboard(chat_id)
                 )
             except Exception:
-                # Fallback to text if image fails
                 await update.message.reply_text(card, parse_mode="HTML",
                                                 reply_markup=get_main_keyboard(chat_id))
         else:
@@ -551,8 +596,8 @@ application.add_handler(CommandHandler("stats", stats))
 application.add_handler(CommandHandler("campaigns", campaigns))
 application.add_handler(CommandHandler("videos", videos))
 
-# Inline pagination callback for videos
-application.add_handler(CallbackQueryHandler(video_pagination_callback, pattern="^videos_page_"))
+# Inline pagination callback for videos (now includes campaign name)
+application.add_handler(CallbackQueryHandler(video_pagination_callback, pattern="^videos_"))
 
 # Reply keyboard handler
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, button_handler))
