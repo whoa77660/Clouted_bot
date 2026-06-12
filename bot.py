@@ -265,11 +265,6 @@ def format_campaign_card(camp: dict, chat_id: int) -> str:
 VIDEOS_PER_PAGE = 12
 
 async def send_videos_page(update_or_query, context, chat_id: int, offset: int = 0):
-    """
-    Sends up to 12 separate clip cards, and if there are more, a final
-    message with a 'Show More' inline button.
-    Works for both regular messages (reply button) and callback queries.
-    """
     clips_dict = get_user_state_ref(chat_id, 'clips').get() or {}
     total = len(clips_dict)
 
@@ -291,14 +286,12 @@ async def send_videos_page(update_or_query, context, chat_id: int, offset: int =
     end = min(offset + VIDEOS_PER_PAGE, total)
     page_clips = clips[start:end]
 
-    # Determine the message object to reply to
     message = None
     if isinstance(update_or_query, Update):
         if update_or_query.callback_query:
             message = update_or_query.callback_query.message
         elif update_or_query.message:
             message = update_or_query.message
-    # If it's a plain message (rare, but handled)
     elif hasattr(update_or_query, 'reply_text'):
         message = update_or_query
 
@@ -333,7 +326,6 @@ async def send_videos_page(update_or_query, context, chat_id: int, offset: int =
                                     reply_markup=get_main_keyboard(chat_id))
         await asyncio.sleep(0.3)
 
-    # Show "More" button if there are remaining clips
     if end < total:
         remaining = total - end
         keyboard = [[
@@ -346,7 +338,6 @@ async def send_videos_page(update_or_query, context, chat_id: int, offset: int =
         if message:
             await message.reply_text("📄 More videos available:", reply_markup=reply_markup)
         else:
-            # Fallback: send to chat directly
             await context.bot.send_message(chat_id, "📄 More videos available:", reply_markup=reply_markup)
 
 async def video_pagination_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -357,15 +348,12 @@ async def video_pagination_callback(update: Update, context: ContextTypes.DEFAUL
         return
     offset = int(data.split("_")[-1])
     chat_id = query.message.chat_id
-    # Delete the button message
     try:
         await query.message.delete()
     except:
         pass
-    # Pass the update (which contains the callback_query) to send_videos_page
     await send_videos_page(update, context, chat_id, offset=offset)
 
-# ── Updated videos command ──
 async def videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     settings = get_user_settings_ref(chat_id).get() or {}
@@ -465,6 +453,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += t('cookie_invalid_warn', chat_id)
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=get_main_keyboard(chat_id))
 
+# ── UPDATED CAMPAIGNS HANDLER (with thumbnail images) ──
 async def campaigns(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     camps = None
@@ -494,7 +483,25 @@ async def campaigns(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for camp in camps:
         card = format_campaign_card(camp, chat_id)
-        await update.message.reply_text(card, parse_mode="HTML", reply_markup=get_main_keyboard(chat_id))
+        thumbnail_url = camp.get('thumbnail')
+
+        # If the campaign has a thumbnail image, send it as a photo with the card as caption
+        if thumbnail_url and thumbnail_url.startswith('http'):
+            try:
+                await context.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=thumbnail_url,
+                    caption=card,
+                    parse_mode='HTML',
+                    reply_markup=get_main_keyboard(chat_id)
+                )
+            except Exception:
+                # Fallback to text if image fails
+                await update.message.reply_text(card, parse_mode="HTML",
+                                                reply_markup=get_main_keyboard(chat_id))
+        else:
+            await update.message.reply_text(card, parse_mode="HTML",
+                                            reply_markup=get_main_keyboard(chat_id))
         await asyncio.sleep(0.3)
 
 # ═══════════════════════════════════════════════
