@@ -260,25 +260,48 @@ def format_campaign_card(camp: dict, chat_id: int) -> str:
     return card
 
 # ═══════════════════════════════════════════════
-# VIDEOS – OLD STYLE CARDS + PAGINATION
+# VIDEOS – OLD STYLE CARDS + PAGINATION (sorted newest first)
 # ═══════════════════════════════════════════════
 VIDEOS_PER_PAGE = 12
 
-async def send_videos_page(update, context, chat_id: int, offset: int = 0):
+async def send_videos_page(update_or_query, context, chat_id: int, offset: int = 0):
+    """
+    Sends up to 12 separate clip cards, and if there are more, a final
+    message with a 'Show More' inline button.
+    Works for both regular messages (reply button) and callback queries.
+    """
     clips_dict = get_user_state_ref(chat_id, 'clips').get() or {}
     total = len(clips_dict)
 
     if total == 0:
-        await update.message.reply_text(t('videos_empty', chat_id),
-                                        reply_markup=get_main_keyboard(chat_id))
+        if hasattr(update_or_query, 'message') and update_or_query.message:
+            await update_or_query.message.reply_text(t('videos_empty', chat_id),
+                                                    reply_markup=get_main_keyboard(chat_id))
+        elif hasattr(update_or_query, 'callback_query') and update_or_query.callback_query:
+            await update_or_query.callback_query.message.reply_text(t('videos_empty', chat_id),
+                                                                    reply_markup=get_main_keyboard(chat_id))
         return
 
-    clips = list(clips_dict.values())
+    # Sort clips by createdAt descending (newest first)
+    def get_created_at(clip):
+        return clip.get('createdAt', '') or ''
+    clips = sorted(clips_dict.values(), key=get_created_at, reverse=True)
+
     start = offset
     end = min(offset + VIDEOS_PER_PAGE, total)
     page_clips = clips[start:end]
 
-    # Send each clip as a separate beautiful card
+    # Determine the message object to reply to
+    message = None
+    if isinstance(update_or_query, Update):
+        if update_or_query.callback_query:
+            message = update_or_query.callback_query.message
+        elif update_or_query.message:
+            message = update_or_query.message
+    # If it's a plain message (rare, but handled)
+    elif hasattr(update_or_query, 'reply_text'):
+        message = update_or_query
+
     for clip in page_clips:
         status = clip.get('status', 'unknown')
         if status == 'healthy':
@@ -303,9 +326,11 @@ async def send_videos_page(update, context, chat_id: int, offset: int = 0):
         )
         if url:
             text += f'🔗 <a href="{html.escape(url)}">Open Video</a>'
-        await update.message.reply_text(text, parse_mode="HTML",
-                                        disable_web_page_preview=True,
-                                        reply_markup=get_main_keyboard(chat_id))
+
+        if message:
+            await message.reply_text(text, parse_mode="HTML",
+                                    disable_web_page_preview=True,
+                                    reply_markup=get_main_keyboard(chat_id))
         await asyncio.sleep(0.3)
 
     # Show "More" button if there are remaining clips
@@ -318,7 +343,11 @@ async def send_videos_page(update, context, chat_id: int, offset: int = 0):
             )
         ]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("📄 More videos available:", reply_markup=reply_markup)
+        if message:
+            await message.reply_text("📄 More videos available:", reply_markup=reply_markup)
+        else:
+            # Fallback: send to chat directly
+            await context.bot.send_message(chat_id, "📄 More videos available:", reply_markup=reply_markup)
 
 async def video_pagination_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -328,12 +357,15 @@ async def video_pagination_callback(update: Update, context: ContextTypes.DEFAUL
         return
     offset = int(data.split("_")[-1])
     chat_id = query.message.chat_id
+    # Delete the button message
     try:
         await query.message.delete()
     except:
         pass
+    # Pass the update (which contains the callback_query) to send_videos_page
     await send_videos_page(update, context, chat_id, offset=offset)
 
+# ── Updated videos command ──
 async def videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     settings = get_user_settings_ref(chat_id).get() or {}
