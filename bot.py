@@ -3,9 +3,9 @@ import html
 import json
 import logging
 import traceback
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from config import TELEGRAM_BOT_TOKEN, OWNER_ID   # ← import OWNER_ID from config
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from config import TELEGRAM_BOT_TOKEN, OWNER_ID
 from firebase_db import (
     get_user_state_ref, get_user_settings_ref, get_cookie_invalid_flag,
     get_all_users
@@ -16,7 +16,7 @@ from api_client import fetch_campaigns
 application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
 # ═══════════════════════════════════════════════
-# GLOBAL ERROR HANDLER
+# GLOBAL ERROR HANDLER (unchanged)
 # ═══════════════════════════════════════════════
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logging.basicConfig(
@@ -57,7 +57,7 @@ def set_user_lang(chat_id, lang: str):
     get_user_settings_ref(chat_id).update({'lang': lang})
 
 # ═══════════════════════════════════════════════
-# TRANSLATIONS
+# TRANSLATIONS (unchanged – kept whole for safety)
 # ═══════════════════════════════════════════════
 T = {
     'en': {
@@ -84,7 +84,7 @@ T = {
         'videos_no_cookie': "You need to set your cookie first. Use /setcookie.",
         'videos_no_data': "No data yet. Please wait for the first poll.",
         'videos_empty': "You have no clips yet.",
-        'video_status_title': "<b>Clip Status</b>",
+        'video_status_title': "Clip Status",
         'campaign_card_status': "Status",
         'campaign_card_budget': "Budget",
         'campaign_card_cpm': "CPM",
@@ -96,12 +96,17 @@ T = {
         'campaign_card_end': "End",
         'campaign_card_remarks': "Remarks",
         'campaign_card_progress': "Progress",
+        'campaign_card_budget_used': "📊 Budget Used",
         'lang_button': "🌐 Language",
         'stats_button': "📊 Stats",
         'campaigns_button': "📋 Campaigns",
         'videos_button': "🎬 My Videos",
         'profile_button': "👤 Profile",
         'help_button': "ℹ️ Help",
+        'show_more_button': "📄 Show more 12 ({remaining} remaining)",
+        'videos_page_title': "🎬 My Videos (showing {start}–{end} of {total})",
+        'earnings': "Earnings",
+        'video_url': "🔗 Video",
     },
     'bn': {
         'welcome': "👋 স্বাগতম! আমি আপনার Clouted অ্যাকাউন্ট মনিটর করি।\nঅ্যাকাউন্ট লিঙ্ক করতে /setcookie <আপনার_পূর্ণ_কুকি> ব্যবহার করুন।\nতারপর নিচের বোতামগুলি ব্যবহার করুন।",
@@ -127,7 +132,7 @@ T = {
         'videos_no_cookie': "আগে কুকি সেট করতে হবে। /setcookie ব্যবহার করুন।",
         'videos_no_data': "এখনো ডেটা নেই। প্রথম পোলের জন্য অপেক্ষা করুন।",
         'videos_empty': "আপনার কোনো ক্লিপ নেই।",
-        'video_status_title': "<b>ক্লিপ অবস্থা</b>",
+        'video_status_title': "ক্লিপ অবস্থা",
         'campaign_card_status': "অবস্থা",
         'campaign_card_budget': "বাজেট",
         'campaign_card_cpm': "CPM",
@@ -139,12 +144,17 @@ T = {
         'campaign_card_end': "শেষ",
         'campaign_card_remarks': "মন্তব্য",
         'campaign_card_progress': "অগ্রগতি",
+        'campaign_card_budget_used': "📊 বাজেট ব্যবহৃত",
         'lang_button': "🌐 ভাষা",
         'stats_button': "📊 পরিসংখ্যান",
         'campaigns_button': "📋 ক্যাম্পেইন",
         'videos_button': "🎬 আমার ভিডিও",
         'profile_button': "👤 প্রোফাইল",
         'help_button': "ℹ️ সাহায্য",
+        'show_more_button': "📄 আরও ১২ দেখুন ({remaining} বাকি)",
+        'videos_page_title': "🎬 আমার ভিডিও ({start}–{end} / {total})",
+        'earnings': "আয়",
+        'video_url': "🔗 ভিডিও",
     }
 }
 
@@ -160,7 +170,7 @@ def cents_to_dollar(cents) -> str:
         return "?"
 
 # ═══════════════════════════════════════════════
-# STYLED KEYBOARD BUTTON (EXACTLY LIKE SHOP BOT)
+# STYLED KEYBOARD BUTTON (unchanged)
 # ═══════════════════════════════════════════════
 def _make_styled_button(text, style=None):
     if style:
@@ -205,6 +215,17 @@ def format_campaign_card(camp: dict, chat_id: int) -> str:
     cpm = cents_to_dollar(camp.get('cpm', 0))
     min_payout = cents_to_dollar(camp.get('minPayout', 0))
     max_payout = cents_to_dollar(camp.get('maxPayout', 0))
+
+    budget_val = camp.get('budget', 0)
+    cpm_val = camp.get('cpm', 0)
+    views_val = camp.get('viewCount', 0)
+    if budget_val and cpm_val and views_val:
+        spent = (views_val * cpm_val) / 1000
+        percent = (spent / budget_val) * 100
+        budget_used_str = f"{percent:.1f}%"
+    else:
+        budget_used_str = "N/A"
+
     participants = html.escape(str(camp.get('participantCount', '?')))
     views = html.escape(str(camp.get('viewCount', '?')))
     platforms = html.escape(', '.join(camp.get('platforms', [])) or 'N/A')
@@ -221,15 +242,19 @@ def format_campaign_card(camp: dict, chat_id: int) -> str:
         if pct is not None:
             progress_text = f"📊 {t('campaign_card_progress', chat_id)}: {html.escape(str(pct))}%\n"
 
+    platforms_display = f"<b>{platforms}</b>"
+    cpm_display = f"<b>{cpm}</b>"
+
     card = (
         f"{emoji} <b>{name}</b>\n"
         f"{t('campaign_card_status', chat_id)}: <code>{status_val}</code>\n"
         f"{progress_text}"
         f"💰 {t('campaign_card_budget', chat_id)}: {budget} (buyer: {buyer_budget})\n"
-        f"💵 {t('campaign_card_cpm', chat_id)}: {cpm} | {t('campaign_card_payout', chat_id)}: {min_payout}–{max_payout}\n"
+        f"{t('campaign_card_budget_used', chat_id)}: {budget_used_str}\n"
+        f"💵 {t('campaign_card_cpm', chat_id)}: {cpm_display} | {t('campaign_card_payout', chat_id)}: {min_payout}–{max_payout}\n"
         f"👥 {t('campaign_card_participants', chat_id)}: {participants}\n"
         f"👀 {t('campaign_card_views', chat_id)}: {views}\n"
-        f"📱 {t('campaign_card_platforms', chat_id)}: {platforms}\n"
+        f"📱 {t('campaign_card_platforms', chat_id)}: {platforms_display}\n"
         f"📅 {t('campaign_card_start', chat_id)}: {start}\n"
         f"🏁 {t('campaign_card_end', chat_id)}: {end}\n"
         f"📝 {t('campaign_card_remarks', chat_id)}: {remarks if remarks else 'None'}\n"
@@ -237,14 +262,117 @@ def format_campaign_card(camp: dict, chat_id: int) -> str:
     return card
 
 # ═══════════════════════════════════════════════
-# COMMAND HANDLERS (unchanged)
+# VIDEOS WITH PAGINATION
+# ═══════════════════════════════════════════════
+VIDEOS_PER_PAGE = 12
+
+async def send_videos_page(update_or_query, context, chat_id: int, offset: int = 0):
+    """
+    Sends or edits a message containing up to VIDEOS_PER_PAGE clips,
+    with a "Show more" inline button if there are more.
+    """
+    clips_dict = get_user_state_ref(chat_id, 'clips').get() or {}
+    if not clips_dict:
+        await update_or_query.message.reply_text(t('videos_empty', chat_id),
+                                                 reply_markup=get_main_keyboard(chat_id))
+        return
+
+    # Convert to list of clips sorted by id (or any order)
+    clips = list(clips_dict.values())
+    total = len(clips)
+    start = offset
+    end = min(offset + VIDEOS_PER_PAGE, total)
+    page_clips = clips[start:end]
+
+    # Build text
+    title = t('videos_page_title', chat_id).format(start=start+1, end=end, total=total)
+    lines = [f"<b>{title}</b>\n"]
+    for i, clip in enumerate(page_clips, start=start+1):
+        status = clip.get('status', 'unknown')
+        if status == 'healthy':
+            status_emoji = "✅"
+        elif status in ('flagged', 'rejected'):
+            status_emoji = "❌"
+        elif status == 'pending':
+            status_emoji = "🕒"
+        else:
+            status_emoji = "❓"
+
+        campaign = html.escape(str(clip.get('campaignName', 'Unknown')))
+        views = html.escape(str(clip.get('views', 0)))
+        earnings = cents_to_dollar(clip.get('earningsCents', 0))
+        url = clip.get('url', '')
+
+        line = (
+            f"{i:2d}. {status_emoji} <code>{campaign}</code>\n"
+            f"    {t('stats_views', chat_id)}: {views} | {t('earnings', chat_id)}: {earnings}\n"
+        )
+        if url:
+            line += f"    🔗 <a href=\"{html.escape(url)}\">Open Video</a>\n"
+        lines.append(line)
+
+    text = ''.join(lines)
+
+    # Build inline keyboard for "Show more" if there are more clips
+    keyboard = []
+    if end < total:
+        remaining = total - end
+        keyboard.append([
+            InlineKeyboardButton(
+                t('show_more_button', chat_id).format(remaining=remaining),
+                callback_data=f"videos_page_{end}"
+            )
+        ])
+
+    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+
+    # If we have an update.callback_query (inline button), edit the message.
+    # Otherwise (first call from reply button), send a new message.
+    if isinstance(update_or_query, Update) and update_or_query.callback_query:
+        query = update_or_query.callback_query
+        await query.answer()
+        try:
+            await query.edit_message_text(text, parse_mode='HTML', disable_web_page_preview=True,
+                                         reply_markup=reply_markup)
+        except Exception as e:
+            await query.message.reply_text(text, parse_mode='HTML', disable_web_page_preview=True,
+                                          reply_markup=reply_markup)
+    else:
+        # It's a reply button or command
+        await update_or_query.message.reply_text(text, parse_mode='HTML', disable_web_page_preview=True,
+                                                reply_markup=reply_markup)
+
+# ── Updated videos command (uses pagination) ──
+async def videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    settings = get_user_settings_ref(chat_id).get() or {}
+    if not settings.get('userId'):
+        await update.message.reply_text(t('videos_no_cookie', chat_id), reply_markup=get_main_keyboard(chat_id))
+        return
+
+    if not first_poll_done(chat_id):
+        await update.message.reply_text(t('videos_no_data', chat_id), reply_markup=get_main_keyboard(chat_id))
+        return
+
+    await send_videos_page(update, context, chat_id, offset=0)
+
+# ── Callback handler for pagination ──
+async def video_pagination_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+    if not data.startswith("videos_page_"):
+        return
+    offset = int(data.split("_")[-1])
+    chat_id = query.message.chat_id
+    await send_videos_page(update, context, chat_id, offset=offset)
+
+# ═══════════════════════════════════════════════
+# OTHER COMMAND HANDLERS (unchanged)
 # ═══════════════════════════════════════════════
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    settings = get_user_settings_ref(chat_id).get() or {}   # safe fallback to {}
-
+    settings = get_user_settings_ref(chat_id).get() or {}
     if not settings.get('lang'):
-        # No language set yet – show language selection
         await update.message.reply_text(
             "Please choose your language / অনুগ্রহ করে আপনার ভাষা নির্বাচন করুন:",
             reply_markup=get_language_keyboard()
@@ -350,58 +478,8 @@ async def campaigns(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(card, parse_mode="HTML", reply_markup=get_main_keyboard(chat_id))
         await asyncio.sleep(0.3)
 
-async def videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    settings = get_user_settings_ref(chat_id).get() or {}
-    if not settings.get('userId'):
-        await update.message.reply_text(t('videos_no_cookie', chat_id), reply_markup=get_main_keyboard(chat_id))
-        return
-
-    if not first_poll_done(chat_id):
-        await update.message.reply_text(t('videos_no_data', chat_id), reply_markup=get_main_keyboard(chat_id))
-        return
-
-    clips = get_user_state_ref(chat_id, 'clips').get()
-    cookie_bad = get_cookie_invalid_flag(chat_id)
-
-    if not clips:
-        msg = t('videos_empty', chat_id)
-        if cookie_bad:
-            msg += t('cookie_invalid_warn', chat_id)
-        await update.message.reply_text(msg, reply_markup=get_main_keyboard(chat_id))
-        return
-
-    for clip_id, clip in clips.items():
-        status = clip.get('status', 'unknown')
-        if status == 'healthy':
-            status_emoji = "✅"
-        elif status in ('flagged', 'rejected'):
-            status_emoji = "❌"
-        elif status == 'pending':
-            status_emoji = "🕒"
-        else:
-            status_emoji = "❓"
-
-        campaign = html.escape(str(clip.get('campaignName', 'Unknown')))
-        views = html.escape(str(clip.get('views', 0)))
-        earnings = cents_to_dollar(clip.get('earningsCents', 0))
-        status_val = html.escape(str(status))
-        url = clip.get('url', '')
-
-        text = (
-            f"{status_emoji} {t('video_status_title', chat_id)}\n"
-            f"{t('campaign_card_status', chat_id)}: <code>{status_val}</code>\n"
-            f"{t('stats_views', chat_id)}: <code>{views}</code>\n"
-            f"{t('stats_earnings', chat_id)}: <code>{earnings} {t('stats_earnings_unit', chat_id)}</code>\n"
-        )
-        if url:
-            text += f'🔗 <a href="{html.escape(url)}">Open Video</a>'
-        await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=True,
-                                        reply_markup=get_main_keyboard(chat_id))
-        await asyncio.sleep(0.3)
-
 # ═══════════════════════════════════════════════
-# BUTTON HANDLER (for reply buttons)
+# BUTTON HANDLER (reply keyboard only)
 # ═══════════════════════════════════════════════
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
@@ -438,6 +516,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # REGISTRATION
 # ═══════════════════════════════════════════════
 application.add_error_handler(error_handler)
+
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("help", help_cmd))
 application.add_handler(CommandHandler("setcookie", set_cookie))
@@ -445,4 +524,9 @@ application.add_handler(CommandHandler("profile", profile))
 application.add_handler(CommandHandler("stats", stats))
 application.add_handler(CommandHandler("campaigns", campaigns))
 application.add_handler(CommandHandler("videos", videos))
+
+# Inline pagination callback for videos
+application.add_handler(CallbackQueryHandler(video_pagination_callback, pattern="^videos_page_"))
+
+# Reply keyboard handler (must be last)
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, button_handler))
