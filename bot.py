@@ -16,7 +16,7 @@ from api_client import fetch_campaigns
 application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
 # ═══════════════════════════════════════════════
-# GLOBAL ERROR HANDLER (unchanged)
+# GLOBAL ERROR HANDLER
 # ═══════════════════════════════════════════════
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logging.basicConfig(
@@ -265,18 +265,15 @@ def format_campaign_card(camp: dict, chat_id: int) -> str:
 VIDEOS_PER_PAGE = 12
 
 async def send_videos_page(update, context, chat_id: int, offset: int = 0):
-    """
-    Sends up to 12 separate clip cards, and if there are more, a final
-    message with a 'Show More' inline button.
-    """
     clips_dict = get_user_state_ref(chat_id, 'clips').get() or {}
-    if not clips_dict:
+    total = len(clips_dict)
+
+    if total == 0:
         await update.message.reply_text(t('videos_empty', chat_id),
                                         reply_markup=get_main_keyboard(chat_id))
         return
 
     clips = list(clips_dict.values())
-    total = len(clips)
     start = offset
     end = min(offset + VIDEOS_PER_PAGE, total)
     page_clips = clips[start:end]
@@ -311,20 +308,18 @@ async def send_videos_page(update, context, chat_id: int, offset: int = 0):
                                         reply_markup=get_main_keyboard(chat_id))
         await asyncio.sleep(0.3)
 
-    # If there are more clips, send a final message with the "Show More" button
+    # Show "More" button if there are remaining clips
     if end < total:
         remaining = total - end
         keyboard = [[
             InlineKeyboardButton(
                 t('show_more_button', chat_id).format(remaining=remaining),
-                callback_data=f"videos_page_{end}",
-                style="primary"
+                callback_data=f"videos_page_{end}"
             )
         ]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text("📄 More videos available:", reply_markup=reply_markup)
 
-# ── Callback handler for pagination ──
 async def video_pagination_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -333,15 +328,12 @@ async def video_pagination_callback(update: Update, context: ContextTypes.DEFAUL
         return
     offset = int(data.split("_")[-1])
     chat_id = query.message.chat_id
-    # Remove the "More videos available" button message
     try:
         await query.message.delete()
     except:
         pass
-    # Send the next batch
     await send_videos_page(update, context, chat_id, offset=offset)
 
-# ── Updated videos command ──
 async def videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     settings = get_user_settings_ref(chat_id).get() or {}
@@ -358,7 +350,7 @@ async def videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_videos_page(update, context, chat_id, offset=0)
 
 # ═══════════════════════════════════════════════
-# OTHER COMMAND HANDLERS (unchanged)
+# OTHER COMMAND HANDLERS
 # ═══════════════════════════════════════════════
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
