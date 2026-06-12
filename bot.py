@@ -57,7 +57,7 @@ def set_user_lang(chat_id, lang: str):
     get_user_settings_ref(chat_id).update({'lang': lang})
 
 # ═══════════════════════════════════════════════
-# TRANSLATIONS (unchanged – kept whole for safety)
+# TRANSLATIONS
 # ═══════════════════════════════════════════════
 T = {
     'en': {
@@ -104,7 +104,6 @@ T = {
         'profile_button': "👤 Profile",
         'help_button': "ℹ️ Help",
         'show_more_button': "📄 Show more 12 ({remaining} remaining)",
-        'videos_page_title': "🎬 My Videos (showing {start}–{end} of {total})",
         'earnings': "Earnings",
         'video_url': "🔗 Video",
     },
@@ -152,7 +151,6 @@ T = {
         'profile_button': "👤 প্রোফাইল",
         'help_button': "ℹ️ সাহায্য",
         'show_more_button': "📄 আরও ১২ দেখুন ({remaining} বাকি)",
-        'videos_page_title': "🎬 আমার ভিডিও ({start}–{end} / {total})",
         'earnings': "আয়",
         'video_url': "🔗 ভিডিও",
     }
@@ -170,7 +168,7 @@ def cents_to_dollar(cents) -> str:
         return "?"
 
 # ═══════════════════════════════════════════════
-# STYLED KEYBOARD BUTTON (unchanged)
+# STYLED KEYBOARD BUTTON
 # ═══════════════════════════════════════════════
 def _make_styled_button(text, style=None):
     if style:
@@ -262,32 +260,29 @@ def format_campaign_card(camp: dict, chat_id: int) -> str:
     return card
 
 # ═══════════════════════════════════════════════
-# VIDEOS WITH PAGINATION
+# VIDEOS – OLD STYLE CARDS + PAGINATION
 # ═══════════════════════════════════════════════
 VIDEOS_PER_PAGE = 12
 
-async def send_videos_page(update_or_query, context, chat_id: int, offset: int = 0):
+async def send_videos_page(update, context, chat_id: int, offset: int = 0):
     """
-    Sends or edits a message containing up to VIDEOS_PER_PAGE clips,
-    with a "Show more" inline button if there are more.
+    Sends up to 12 separate clip cards, and if there are more, a final
+    message with a 'Show More' inline button.
     """
     clips_dict = get_user_state_ref(chat_id, 'clips').get() or {}
     if not clips_dict:
-        await update_or_query.message.reply_text(t('videos_empty', chat_id),
-                                                 reply_markup=get_main_keyboard(chat_id))
+        await update.message.reply_text(t('videos_empty', chat_id),
+                                        reply_markup=get_main_keyboard(chat_id))
         return
 
-    # Convert to list of clips sorted by id (or any order)
     clips = list(clips_dict.values())
     total = len(clips)
     start = offset
     end = min(offset + VIDEOS_PER_PAGE, total)
     page_clips = clips[start:end]
 
-    # Build text
-    title = t('videos_page_title', chat_id).format(start=start+1, end=end, total=total)
-    lines = [f"<b>{title}</b>\n"]
-    for i, clip in enumerate(page_clips, start=start+1):
+    # Send each clip as a separate beautiful card
+    for clip in page_clips:
         status = clip.get('status', 'unknown')
         if status == 'healthy':
             status_emoji = "✅"
@@ -303,68 +298,64 @@ async def send_videos_page(update_or_query, context, chat_id: int, offset: int =
         earnings = cents_to_dollar(clip.get('earningsCents', 0))
         url = clip.get('url', '')
 
-        line = (
-            f"{i:2d}. {status_emoji} <code>{campaign}</code>\n"
-            f"    {t('stats_views', chat_id)}: {views} | {t('earnings', chat_id)}: {earnings}\n"
+        text = (
+            f"{status_emoji} {t('video_status_title', chat_id)}\n"
+            f"{t('campaign_card_status', chat_id)}: <code>{status}</code>\n"
+            f"{t('stats_views', chat_id)}: <code>{views}</code>\n"
+            f"{t('earnings', chat_id)}: <code>{earnings}</code>\n"
         )
         if url:
-            line += f"    🔗 <a href=\"{html.escape(url)}\">Open Video</a>\n"
-        lines.append(line)
+            text += f'🔗 <a href="{html.escape(url)}">Open Video</a>'
+        await update.message.reply_text(text, parse_mode="HTML",
+                                        disable_web_page_preview=True,
+                                        reply_markup=get_main_keyboard(chat_id))
+        await asyncio.sleep(0.3)
 
-    text = ''.join(lines)
-
-    # Build inline keyboard for "Show more" if there are more clips
-    keyboard = []
+    # If there are more clips, send a final message with the "Show More" button
     if end < total:
         remaining = total - end
-        keyboard.append([
+        keyboard = [[
             InlineKeyboardButton(
                 t('show_more_button', chat_id).format(remaining=remaining),
-                callback_data=f"videos_page_{end}"
+                callback_data=f"videos_page_{end}",
+                style="primary"
             )
-        ])
-
-    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
-
-    # If we have an update.callback_query (inline button), edit the message.
-    # Otherwise (first call from reply button), send a new message.
-    if isinstance(update_or_query, Update) and update_or_query.callback_query:
-        query = update_or_query.callback_query
-        await query.answer()
-        try:
-            await query.edit_message_text(text, parse_mode='HTML', disable_web_page_preview=True,
-                                         reply_markup=reply_markup)
-        except Exception as e:
-            await query.message.reply_text(text, parse_mode='HTML', disable_web_page_preview=True,
-                                          reply_markup=reply_markup)
-    else:
-        # It's a reply button or command
-        await update_or_query.message.reply_text(text, parse_mode='HTML', disable_web_page_preview=True,
-                                                reply_markup=reply_markup)
-
-# ── Updated videos command (uses pagination) ──
-async def videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    settings = get_user_settings_ref(chat_id).get() or {}
-    if not settings.get('userId'):
-        await update.message.reply_text(t('videos_no_cookie', chat_id), reply_markup=get_main_keyboard(chat_id))
-        return
-
-    if not first_poll_done(chat_id):
-        await update.message.reply_text(t('videos_no_data', chat_id), reply_markup=get_main_keyboard(chat_id))
-        return
-
-    await send_videos_page(update, context, chat_id, offset=0)
+        ]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text("📄 More videos available:", reply_markup=reply_markup)
 
 # ── Callback handler for pagination ──
 async def video_pagination_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    await query.answer()
     data = query.data
     if not data.startswith("videos_page_"):
         return
     offset = int(data.split("_")[-1])
     chat_id = query.message.chat_id
+    # Remove the "More videos available" button message
+    try:
+        await query.message.delete()
+    except:
+        pass
+    # Send the next batch
     await send_videos_page(update, context, chat_id, offset=offset)
+
+# ── Updated videos command ──
+async def videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    settings = get_user_settings_ref(chat_id).get() or {}
+    if not settings.get('userId'):
+        await update.message.reply_text(t('videos_no_cookie', chat_id),
+                                        reply_markup=get_main_keyboard(chat_id))
+        return
+
+    if not first_poll_done(chat_id):
+        await update.message.reply_text(t('videos_no_data', chat_id),
+                                        reply_markup=get_main_keyboard(chat_id))
+        return
+
+    await send_videos_page(update, context, chat_id, offset=0)
 
 # ═══════════════════════════════════════════════
 # OTHER COMMAND HANDLERS (unchanged)
@@ -393,7 +384,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def set_cookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if not context.args:
-        await update.message.reply_text(t('setcookie_prompt', chat_id), reply_markup=get_main_keyboard(chat_id))
+        await update.message.reply_text(t('setcookie_prompt', chat_id),
+                                        reply_markup=get_main_keyboard(chat_id))
         return
     cookie = ' '.join(context.args)
     success, message = validate_and_save_cookie(chat_id, cookie)
@@ -403,7 +395,8 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     settings = get_user_settings_ref(chat_id).get() or {}
     if not settings.get('userId'):
-        await update.message.reply_text(t('profile_no_cookie', chat_id), reply_markup=get_main_keyboard(chat_id))
+        await update.message.reply_text(t('profile_no_cookie', chat_id),
+                                        reply_markup=get_main_keyboard(chat_id))
         return
 
     username = html.escape(str(settings.get('username', 'Unknown')))
@@ -428,7 +421,8 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     settings = get_user_settings_ref(chat_id).get() or {}
     if not settings.get('userId'):
-        await update.message.reply_text(t('stats_no_cookie', chat_id), reply_markup=get_main_keyboard(chat_id))
+        await update.message.reply_text(t('stats_no_cookie', chat_id),
+                                        reply_markup=get_main_keyboard(chat_id))
         return
 
     s = get_user_state_ref(chat_id, 'stats').get() or {}
@@ -470,7 +464,8 @@ async def campaigns(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 continue
 
     if not camps:
-        await update.message.reply_text(t('campaigns_empty', chat_id), reply_markup=get_main_keyboard(chat_id))
+        await update.message.reply_text(t('campaigns_empty', chat_id),
+                                        reply_markup=get_main_keyboard(chat_id))
         return
 
     for camp in camps:
@@ -528,5 +523,5 @@ application.add_handler(CommandHandler("videos", videos))
 # Inline pagination callback for videos
 application.add_handler(CallbackQueryHandler(video_pagination_callback, pattern="^videos_page_"))
 
-# Reply keyboard handler (must be last)
+# Reply keyboard handler
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, button_handler))
