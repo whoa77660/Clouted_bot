@@ -1,6 +1,7 @@
 from firebase_db import (
     get_user_state_ref, get_all_users,
-    set_cookie_invalid_flag, get_cookie_invalid_flag
+    set_cookie_invalid_flag, get_cookie_invalid_flag,
+    db_get, db_set   # <-- directly import helpers
 )
 from api_client import fetch_campaigns, fetch_clips, fetch_campaign_progress
 from bot import send_notification
@@ -8,29 +9,17 @@ from config import OWNER_ID
 
 CLIP_FETCH_LIMIT = 30
 
-# ─── Global milestone helpers ───────────────────────────────
+# ─── Global milestone deduplication helpers ─────────────────
 def _milestone_key(campaign_uuid: str, milestone: int) -> str:
-    """Unique key for a specific campaign + milestone step."""
     return f"{campaign_uuid}_{milestone}"
 
 def _already_broadcasted(campaign_uuid: str, milestone: int) -> bool:
-    """Check if this milestone has already been broadcast."""
     key = _milestone_key(campaign_uuid, milestone)
     return db_get(f"broadcasted_milestones/{key}") == True
 
 def _mark_broadcasted(campaign_uuid: str, milestone: int):
-    """Mark a milestone as broadcasted so we don't send it again."""
     key = _milestone_key(campaign_uuid, milestone)
     db_set(f"broadcasted_milestones/{key}", True)
-
-# For direct Firebase read/write inside monitor.py (simple wrappers)
-def db_get(path):
-    from firebase_db import db
-    return db.reference(path).get()
-
-def db_set(path, data):
-    from firebase_db import db
-    db.reference(path).set(data)
 
 
 async def check_changes_for_user(chat_id: int):
@@ -76,7 +65,7 @@ async def check_changes_for_user(chat_id: int):
 
     campaigns_changed = False
 
-    # ---- CAMPAIGN NOTIFICATIONS (per‑user status/progress) ----
+    # ---- CAMPAIGN NOTIFICATIONS (per‑user) ----
     if not is_first_poll:
         for uuid, camp in new_camp_dict.items():
             old = old_campaigns.get(uuid)
@@ -127,10 +116,8 @@ async def check_changes_for_user(chat_id: int):
                     last_milestone = old.get('last_budget_milestone', 0)
 
                     if current_milestone > last_milestone and not _already_broadcasted(uuid, current_milestone):
-                        # Mark globally so it's never sent again
                         _mark_broadcasted(uuid, current_milestone)
 
-                        # Build the alert text
                         alert = (
                             f"💰 Budget Milestone Reached\n"
                             f"Campaign: {camp['name']}\n"
@@ -139,7 +126,7 @@ async def check_changes_for_user(chat_id: int):
                             f"💸 Spent: ${budget_spent / 100:.2f} / ${budget / 100:.2f}"
                         )
 
-                        # Send to ALL linked users
+                        # Broadcast to ALL linked users
                         all_users = get_all_users()
                         for uid in all_users:
                             try:
