@@ -25,5 +25,11 @@ def get_all_users():
 def set_cookie_invalid_flag(chat_id, is_invalid: bool):
     db.reference(f'users/{chat_id}/settings/cookie_invalid').set(is_invalid)
 
+def db_get(path):
+    return db.reference(path).get()
+
+def db_set(path, data):
+    db.reference(path).set(data)
+
 def get_cookie_invalid_flag(chat_id) -> bool:
     return db.reference(f'users/{chat_id}/settings/cookie_invalid').get() or False
