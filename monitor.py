@@ -8,6 +8,31 @@ from config import OWNER_ID
 
 CLIP_FETCH_LIMIT = 30
 
+# ─── Global milestone helpers ───────────────────────────────
+def _milestone_key(campaign_uuid: str, milestone: int) -> str:
+    """Unique key for a specific campaign + milestone step."""
+    return f"{campaign_uuid}_{milestone}"
+
+def _already_broadcasted(campaign_uuid: str, milestone: int) -> bool:
+    """Check if this milestone has already been broadcast."""
+    key = _milestone_key(campaign_uuid, milestone)
+    return db_get(f"broadcasted_milestones/{key}") == True
+
+def _mark_broadcasted(campaign_uuid: str, milestone: int):
+    """Mark a milestone as broadcasted so we don't send it again."""
+    key = _milestone_key(campaign_uuid, milestone)
+    db_set(f"broadcasted_milestones/{key}", True)
+
+# For direct Firebase read/write inside monitor.py (simple wrappers)
+def db_get(path):
+    from firebase_db import db
+    return db.reference(path).get()
+
+def db_set(path, data):
+    from firebase_db import db
+    db.reference(path).set(data)
+
+
 async def check_changes_for_user(chat_id: int):
     was_invalid = get_cookie_invalid_flag(chat_id)
 
@@ -51,7 +76,7 @@ async def check_changes_for_user(chat_id: int):
 
     campaigns_changed = False
 
-    # ---- CAMPAIGN NOTIFICATIONS ----
+    # ---- CAMPAIGN NOTIFICATIONS (per‑user status/progress) ----
     if not is_first_poll:
         for uuid, camp in new_camp_dict.items():
             old = old_campaigns.get(uuid)
@@ -91,27 +116,41 @@ async def check_changes_for_user(chat_id: int):
                         print(f"[PROGRESS] {camp['name']}: {old_pct}% → {new_pct}%")
                         campaigns_changed = True
 
-                # Budget milestone – now shows actual current % and clearly states the crossed milestone
+                # ---- Budget Milestone (GLOBAL BROADCAST) ----
                 budget = camp.get('budget')
                 cpm = camp.get('cpm')
                 views = camp.get('viewCount')
                 if budget and cpm and views and budget > 0:
-                    budget_spent = (views * cpm) / 1000            # in cents
+                    budget_spent = (views * cpm) / 1000
                     current_pct = (budget_spent / budget) * 100
                     current_milestone = int(current_pct // 10) * 10
                     last_milestone = old.get('last_budget_milestone', 0)
 
-                    if current_milestone > last_milestone:
-                        await send_notification(chat_id,
+                    if current_milestone > last_milestone and not _already_broadcasted(uuid, current_milestone):
+                        # Mark globally so it's never sent again
+                        _mark_broadcasted(uuid, current_milestone)
+
+                        # Build the alert text
+                        alert = (
                             f"💰 Budget Milestone Reached\n"
                             f"Campaign: {camp['name']}\n"
                             f"🎯 Crossed {current_milestone}% milestone\n"
                             f"📊 Current usage: {current_pct:.1f}%\n"
                             f"💸 Spent: ${budget_spent / 100:.2f} / ${budget / 100:.2f}"
                         )
-                        print(f"[BUDGET MILESTONE] {camp['name']}: {current_milestone}% (actual {current_pct:.1f}%)")
-                        camp['last_budget_milestone'] = current_milestone
+
+                        # Send to ALL linked users
+                        all_users = get_all_users()
+                        for uid in all_users:
+                            try:
+                                await send_notification(uid, alert)
+                            except Exception as e:
+                                print(f"Failed to send milestone to {uid}: {e}")
+
+                        print(f"[BUDGET MILESTONE GLOBAL] {camp['name']}: {current_milestone}% (actual {current_pct:.1f}%)")
                         campaigns_changed = True
+
+                    camp['last_budget_milestone'] = current_milestone
                 else:
                     camp['last_budget_milestone'] = old.get('last_budget_milestone', 0)
     else:
@@ -119,7 +158,7 @@ async def check_changes_for_user(chat_id: int):
         for camp in new_camp_dict.values():
             camp['last_budget_milestone'] = 0
 
-    # ---- CLIP NOTIFICATIONS ----
+    # ---- CLIP NOTIFICATIONS (per‑user) ----
     clips_changed = False
     if not is_first_poll:
         for clip_id, clip in new_clip_dict.items():
@@ -169,7 +208,6 @@ async def check_changes_for_user(chat_id: int):
                         )
                     clips_changed = True
 
-                # View count change – now includes current status
                 if clip.get('views', 0) != old.get('views', 0):
                     status_emoji = {"healthy":"✅","flagged":"❌","pending":"🕒","rejected":"❌"}.get(status,"❓")
                     await send_notification(chat_id,
@@ -183,7 +221,7 @@ async def check_changes_for_user(chat_id: int):
     else:
         clips_changed = True
 
-    # ---- OVERALL STATS (dollars) ----
+    # ---- OVERALL STATS (per‑user) ----
     total_earnings_cents = sum(c.get('earningsCents', 0) for c in fresh_clips)
     total_views = sum(c.get('views', 0) for c in fresh_clips)
     total_clips = len(fresh_clips)
