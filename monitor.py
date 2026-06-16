@@ -1,13 +1,13 @@
 from firebase_db import (
     get_user_state_ref, get_all_users,
     set_cookie_invalid_flag, get_cookie_invalid_flag,
-    db_get, db_set   # <-- directly import helpers
+    db_get, db_set
 )
 from api_client import fetch_campaigns, fetch_clips, fetch_campaign_progress
 from bot import send_notification
 from config import OWNER_ID
 
-CLIP_FETCH_LIMIT = 30
+CLIP_FETCH_LIMIT = 50   # <--- changed from 30 to 50
 
 # ─── Global milestone deduplication helpers ─────────────────
 def _milestone_key(campaign_uuid: str, milestone: int) -> str:
