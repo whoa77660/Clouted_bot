@@ -111,6 +111,7 @@ T = {
         'select_campaign': "📁 Select a campaign to view its videos:",
         'back_button': "🔙 Back",
         'back_to_main': "🔙 Back to main menu",
+        'total_earnings_campaign': "💰 Total earnings from this campaign",
     },
     'bn': {
         'welcome': "👋 স্বাগতম! আমি আপনার Clouted অ্যাকাউন্ট মনিটর করি।\nঅ্যাকাউন্ট লিঙ্ক করতে /setcookie <আপনার_পূর্ণ_কুকি> ব্যবহার করুন।\nতারপর নিচের বোতামগুলি ব্যবহার করুন।",
@@ -162,6 +163,7 @@ T = {
         'select_campaign': "📁 ভিডিও দেখতে একটি ক্যাম্পেইন নির্বাচন করুন:",
         'back_button': "🔙 ফিরুন",
         'back_to_main': "🔙 প্রধান মেনুতে ফিরুন",
+        'total_earnings_campaign': "💰 এই ক্যাম্পেইন থেকে মোট আয়",
     }
 }
 
@@ -303,7 +305,7 @@ def get_campaign_list_keyboard(chat_id: int):
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 # ═══════════════════════════════════════════════
-# VIDEOS – SHOW ONE CAMPAIGN AT A TIME
+# VIDEOS – SHOW ONE CAMPAIGN AT A TIME (with total earnings)
 # ═══════════════════════════════════════════════
 VIDEOS_PER_PAGE = 12
 
@@ -320,6 +322,10 @@ async def send_campaign_videos(update_or_query, context, chat_id: int, campaign_
             await update_or_query.message.reply_text("No videos in this campaign.")
         return
 
+    # --- Calculate total earnings from this campaign ---
+    total_earnings_cents = sum(c.get('earningsCents', 0) for c in campaign_clips)
+    total_earnings_dollars = f"${total_earnings_cents / 100:.2f}"
+
     campaign_info = None
     for cid, cdata in campaigns_dict.items():
         if cdata.get('name') == campaign_name:
@@ -335,7 +341,11 @@ async def send_campaign_videos(update_or_query, context, chat_id: int, campaign_
     elif hasattr(update_or_query, 'reply_text'):
         message = update_or_query
 
-    header_text = f"📌 <b>{html.escape(campaign_name)}</b>"
+    # Header: campaign name + total earnings
+    header_text = (
+        f"📌 <b>{html.escape(campaign_name)}</b>\n"
+        f"{t('total_earnings_campaign', chat_id)}: <code>{total_earnings_dollars}</code>"
+    )
     if campaign_info and campaign_info.get('thumbnail'):
         try:
             await message.reply_photo(
@@ -425,7 +435,6 @@ async def campaign_video_callback(update: Update, context: ContextTypes.DEFAULT_
     await send_campaign_videos(update, context, chat_id, campaign_name, clip_offset)
 
 async def show_campaign_list(update, context, chat_id):
-    """Show the campaign list keyboard, handling both commands and inline callbacks."""
     keyboard = get_campaign_list_keyboard(chat_id)
     if keyboard is None:
         msg = t('videos_empty', chat_id)
