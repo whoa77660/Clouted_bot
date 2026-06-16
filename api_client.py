@@ -133,7 +133,7 @@ def fetch_campaign_progress(chat_id: int, campaign_uuid: str):
         return None
 
 
-def fetch_clips_and_stats(chat_id: int, page_size: int = 12):
+def fetch_clips_and_stats(chat_id: int, page_size: int = 50):   # <--- default now 50
     settings = get_user_settings_ref(chat_id).get()
     user_id = settings.get('userId') if settings else None
 
@@ -172,38 +172,6 @@ def fetch_clips_and_stats(chat_id: int, page_size: int = 12):
     return clips, stats
 
 
-def fetch_clips(chat_id: int, page_size: int = 12):
+def fetch_clips(chat_id: int, page_size: int = 50):   # <--- default now 50
     clips, _ = fetch_clips_and_stats(chat_id, page_size)
     return clips
-
-
-# ---------- PUBLIC FUNCTION (no cookie needed) ----------
-def fetch_campaigns_public(page_size: int = 12):
-    """
-    Fetch campaigns without authentication (public endpoint).
-    Returns a list of campaign dicts.
-    """
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Mobile Safari/537.36',
-        'Accept': '*/*',
-        'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8,bn;q=0.7,ru;q=0.6,vi;q=0.5',
-        'Referer': 'https://app.clouted.com/campaigns',
-    }
-    input_data = {
-        "0": {
-            "json": {
-                "filter": "browse",
-                "pageSize": page_size,
-                "direction": "forward"
-            }
-        }
-    }
-    input_json_str = json.dumps(input_data, separators=(',', ':'))
-    params = {'batch': '1', 'input': input_json_str}
-    resp = requests.get(f'{CLOUTED_BASE_URL}/api/trpc/campaign.list', headers=headers, params=params)
-    resp.raise_for_status()
-    raw = resp.json()
-    result = _extract_list_from_response(raw)
-    if not isinstance(result, list):
-        return []
-    return result
