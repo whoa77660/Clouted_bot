@@ -3,9 +3,12 @@ from firebase_admin import credentials, db
 from config import FIREBASE_DATABASE_URL
 
 cred = credentials.Certificate("firebase.json")
-firebase_admin.initialize_app(cred, {
-    'databaseURL': FIREBASE_DATABASE_URL
-})
+
+# Critical Bug 3: avoid double initialization
+if not firebase_admin._apps:
+    firebase_admin.initialize_app(cred, {
+        'databaseURL': FIREBASE_DATABASE_URL
+    })
 
 def get_user_settings_ref(chat_id):
     return db.reference(f'users/{chat_id}/settings')
@@ -19,7 +22,11 @@ def get_all_users():
     for uid, data in users.items():
         settings = data.get('settings', {})
         if settings and settings.get('clouted_cookie'):
-            result[int(uid)] = settings
+            # Bug 3 fix: safe int conversion
+            try:
+                result[int(uid)] = settings
+            except (ValueError, TypeError):
+                continue
     return result
 
 def set_cookie_invalid_flag(chat_id, is_invalid: bool):
