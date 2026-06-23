@@ -1,262 +1,194 @@
+import asyncio
+import time
+import logging
 from firebase_db import (
     get_user_state_ref, get_all_users,
     set_cookie_invalid_flag, get_cookie_invalid_flag,
     db_get, db_set
 )
 from api_client import fetch_campaigns, fetch_clips, fetch_campaign_progress
-from bot import send_notification
 from config import OWNER_ID
 
-CLIP_FETCH_LIMIT = 50   # <--- changed from 30 to 50
+CLIP_FETCH_LIMIT = 100
 
-# ─── Global milestone deduplication helpers ─────────────────
-def _milestone_key(campaign_uuid: str, milestone: int) -> str:
-    return f"{campaign_uuid}_{milestone}"
+# ─── Global milestone deduplication ─────────────────
+def _milestone_key(uuid, milestone):
+    return f"{uuid}_{milestone}"
+def _already_broadcasted(uuid, milestone):
+    return db_get(f"broadcasted_milestones/{_milestone_key(uuid, milestone)}") == True
+def _mark_broadcasted(uuid, milestone):
+    db_set(f"broadcasted_milestones/{_milestone_key(uuid, milestone)}", True)
 
-def _already_broadcasted(campaign_uuid: str, milestone: int) -> bool:
-    key = _milestone_key(campaign_uuid, milestone)
-    return db_get(f"broadcasted_milestones/{key}") == True
+async def send_notification(psid, text):
+    # Lazy import to avoid circular dependency (Critical Bug 1)
+    from messenger_app import send_messenger_message
+    await asyncio.to_thread(send_messenger_message, psid, text)
 
-def _mark_broadcasted(campaign_uuid: str, milestone: int):
-    key = _milestone_key(campaign_uuid, milestone)
-    db_set(f"broadcasted_milestones/{key}", True)
+async def broadcast_to_all(users, text):
+    for uid in users:
+        try:
+            await send_notification(uid, text)
+        except Exception as e:
+            logging.error(f"Broadcast error to {uid}: {e}")
 
-
-async def check_changes_for_user(chat_id: int):
-    was_invalid = get_cookie_invalid_flag(chat_id)
-
+async def check_changes_for_user(psid):
+    was_invalid = get_cookie_invalid_flag(psid)
     try:
-        fresh_campaigns = fetch_campaigns(chat_id)
-        fresh_clips = fetch_clips(chat_id, page_size=CLIP_FETCH_LIMIT)
+        camps = fetch_campaigns(psid)
+        clips = fetch_clips(psid, page_size=CLIP_FETCH_LIMIT)
     except Exception as e:
-        error_msg = str(e)
-        if '401' in error_msg or 'expired' in error_msg.lower() or 'cookie' in error_msg.lower():
+        err = str(e)
+        logging.error(f"Fetch failed for {psid}: {err}")
+        if '401' in err or 'expired' in err.lower() or 'cookie' in err.lower():
             if not was_invalid:
-                set_cookie_invalid_flag(chat_id, True)
-                await send_notification(chat_id,
+                set_cookie_invalid_flag(psid, True)
+                await send_notification(psid,
                     "⚠️ Your Clouted cookie is invalid or expired.\n"
                     "Please update it with /setcookie to resume monitoring."
                 )
         return
-
     if was_invalid:
-        set_cookie_invalid_flag(chat_id, False)
-        await send_notification(chat_id, "✅ Your cookie is working again. Monitoring resumed.")
-
-    if not isinstance(fresh_campaigns, list) or not isinstance(fresh_clips, list):
+        set_cookie_invalid_flag(psid, False)
+        await send_notification(psid, "✅ Your cookie is working again. Monitoring resumed.")
+    if not isinstance(camps, list) or not isinstance(clips, list):
         return
 
-    # Attach progress to campaigns (no notification)
-    for camp in fresh_campaigns:
+    # Performance: fetch campaign progress concurrently (Critical Performance Issue)
+    async def fetch_progress(camp):
         uuid = camp.get('uuid')
         if uuid:
-            progress = fetch_campaign_progress(chat_id, uuid)
+            # run the synchronous call in a thread to avoid blocking
+            return await asyncio.to_thread(fetch_campaign_progress, psid, uuid)
+        return None
+
+    progress_tasks = [fetch_progress(c) for c in camps]
+    progress_results = await asyncio.gather(*progress_tasks, return_exceptions=True)
+    for camp, progress in zip(camps, progress_results):
+        if isinstance(progress, Exception):
+            logging.error(f"Progress fetch error for campaign {camp.get('name')}: {progress}")
+        else:
             camp['progress'] = progress
 
-    old_campaigns = get_user_state_ref(chat_id, 'campaigns').get() or {}
-    old_clips = get_user_state_ref(chat_id, 'clips').get() or {}
-    old_stats = get_user_state_ref(chat_id, 'stats').get() or {}
-    first_poll_done_flag = get_user_state_ref(chat_id, 'first_poll_done').get() or False
+    old_camps = get_user_state_ref(psid, 'campaigns').get() or {}
+    old_clips = get_user_state_ref(psid, 'clips').get() or {}
+    old_stats = get_user_state_ref(psid, 'stats').get() or {}
+    first_poll_done = get_user_state_ref(psid, 'first_poll_done').get() or False
+    is_first = not first_poll_done and not old_camps and not old_clips
 
-    is_first_poll = not first_poll_done_flag and not old_campaigns and not old_clips
+    new_camp_dict = {c['uuid']: c for c in camps}
+    new_clip_dict = {str(c.get('id')): c for c in clips}
+    all_users = get_all_users()
+    camps_changed = False
 
-    new_camp_dict = {c['uuid']: c for c in fresh_campaigns}
-    new_clip_dict = {str(c.get('id')): c for c in fresh_clips}
-
-    campaigns_changed = False
-
-    # ---- CAMPAIGN NOTIFICATIONS (per‑user) ----
-    if not is_first_poll:
+    if not is_first:
         for uuid, camp in new_camp_dict.items():
-            old = old_campaigns.get(uuid)
+            old = old_camps.get(uuid)
+            name = camp.get('name', 'Unknown')
+            status = camp.get('status', '?')
             if old is None:
-                await send_notification(chat_id,
-                    f"🆕 New Campaign\n"
-                    f"Name: {camp['name']}\n"
-                    f"Status: {camp['status']}\n"
-                    f"CPM: {camp.get('cpm','?')}\n"
-                    f"Participants: {camp.get('participantCount','?')}"
-                )
-                print(f"[NEW CAMPAIGN] {camp['name']} ({uuid})")
-                campaigns_changed = True
+                await broadcast_to_all(all_users,
+                    f"🆕 New Campaign\nName: {name}\nStatus: {status}\nCPM: {camp.get('cpm','?')}\nParticipants: {camp.get('participantCount','?')}")
+                camps_changed = True
                 camp['last_budget_milestone'] = 0
             else:
                 if camp['status'] != old['status']:
                     emoji = "▶️" if camp['status'] == 'active' else ("⏸️" if camp['status'] == 'paused' else "🔄")
-                    await send_notification(chat_id,
-                        f"{emoji} Campaign Status Changed\n"
-                        f"Name: {camp['name']}\n"
-                        f"Old: {old['status']} → New: {camp['status']}"
-                    )
-                    print(f"[STATUS CHANGE] {camp['name']}: {old['status']} → {camp['status']}")
-                    campaigns_changed = True
-
-                old_progress = old.get('progress')
-                new_progress = camp.get('progress')
-                if old_progress and new_progress:
-                    old_pct = old_progress.get('percentage') if isinstance(old_progress, dict) else old_progress
-                    new_pct = new_progress.get('percentage') if isinstance(new_progress, dict) else new_progress
-                    if old_pct != new_pct:
-                        await send_notification(chat_id,
-                            f"📊 Campaign Progress Updated\n"
-                            f"Campaign: {camp['name']}\n"
-                            f"Progress: {old_pct}% → {new_pct}%"
-                        )
-                        print(f"[PROGRESS] {camp['name']}: {old_pct}% → {new_pct}%")
-                        campaigns_changed = True
-
-                # ---- Budget Milestone (GLOBAL BROADCAST) ----
+                    await broadcast_to_all(all_users,
+                        f"{emoji} Campaign Status Changed\nName: {name}\nOld: {old['status']} → New: {camp['status']}")
+                    camps_changed = True
+                op = old.get('progress')
+                np = camp.get('progress')
+                if op and np:
+                    opct = op.get('percentage') if isinstance(op, dict) else op
+                    npct = np.get('percentage') if isinstance(np, dict) else np
+                    if opct != npct:
+                        await broadcast_to_all(all_users,
+                            f"📊 Campaign Progress Updated\nCampaign: {name}\nProgress: {opct}% → {npct}%")
+                        camps_changed = True
                 budget = camp.get('budget')
                 cpm = camp.get('cpm')
                 views = camp.get('viewCount')
                 if budget and cpm and views and budget > 0:
-                    budget_spent = (views * cpm) / 1000
-                    current_pct = (budget_spent / budget) * 100
-                    current_milestone = int(current_pct // 10) * 10
+                    spent = (views * cpm) / 1000
+                    pct = (spent / budget) * 100
+                    milestone = int(pct // 10) * 10
                     last_milestone = old.get('last_budget_milestone', 0)
-
-                    if current_milestone > last_milestone and not _already_broadcasted(uuid, current_milestone):
-                        _mark_broadcasted(uuid, current_milestone)
-
-                        alert = (
-                            f"💰 Budget Milestone Reached\n"
-                            f"Campaign: {camp['name']}\n"
-                            f"🎯 Crossed {current_milestone}% milestone\n"
-                            f"📊 Current usage: {current_pct:.1f}%\n"
-                            f"💸 Spent: ${budget_spent / 100:.2f} / ${budget / 100:.2f}"
-                        )
-
-                        # Broadcast to ALL linked users
-                        all_users = get_all_users()
-                        for uid in all_users:
-                            try:
-                                await send_notification(uid, alert)
-                            except Exception as e:
-                                print(f"Failed to send milestone to {uid}: {e}")
-
-                        print(f"[BUDGET MILESTONE GLOBAL] {camp['name']}: {current_milestone}% (actual {current_pct:.1f}%)")
-                        campaigns_changed = True
-
-                    camp['last_budget_milestone'] = current_milestone
+                    if milestone > last_milestone and not _already_broadcasted(uuid, milestone):
+                        _mark_broadcasted(uuid, milestone)
+                        await broadcast_to_all(all_users,
+                            f"💰 Budget Milestone Reached\nCampaign: {name}\n🎯 Crossed {milestone}% milestone\n📊 Current usage: {pct:.1f}%\n💸 Spent: ${spent/100:.2f} / ${budget/100:.2f}")
+                        camps_changed = True
+                    camp['last_budget_milestone'] = milestone
                 else:
                     camp['last_budget_milestone'] = old.get('last_budget_milestone', 0)
     else:
-        campaigns_changed = True
+        camps_changed = True
         for camp in new_camp_dict.values():
             camp['last_budget_milestone'] = 0
 
-    # ---- CLIP NOTIFICATIONS (per‑user) ----
     clips_changed = False
-    if not is_first_poll:
+    if not is_first:
         for clip_id, clip in new_clip_dict.items():
             old = old_clips.get(clip_id)
             status = clip.get('status', 'unknown')
+            campaign_name = clip.get('campaignName', 'Unknown')
             if old is None:
                 emoji, label = {
-                    'healthy':  ('✅', 'Clip Approved'),
-                    'flagged':  ('❌', 'Clip Rejected'),
-                    'pending':  ('📝', 'Clip Pending Review'),
-                    'rejected': ('❌', 'Clip Rejected'),
-                }.get(status, ('❓', f'Clip Status: {status}'))
-                text = (
-                    f"{emoji} {label}\n"
-                    f"Campaign: {clip['campaignName']}\n"
-                    f"Video: {clip.get('url', 'No link')}\n"
-                    f"Views: {clip.get('views', 0)}\n"
-                    f"Earnings: ${clip.get('earningsCents', 0) / 100:.2f}"
-                )
+                    'healthy':('✅','Clip Approved'),'flagged':('❌','Clip Rejected'),
+                    'pending':('📝','Clip Pending Review'),'rejected':('❌','Clip Rejected')
+                }.get(status,('❓',f'Clip Status: {status}'))
+                text = f"{emoji} {label}\nCampaign: {campaign_name}\nVideo: {clip.get('url','No link')}\nViews: {clip.get('views',0)}\nEarnings: ${clip.get('earningsCents',0)/100:.2f}"
                 if status == 'flagged':
-                    text += f"\nReason: {clip.get('flagReason', 'No reason given')}"
-                await send_notification(chat_id, text)
+                    text += f"\nReason: {clip.get('flagReason','No reason given')}"
+                await send_notification(psid, text)
                 clips_changed = True
             else:
                 if clip['status'] != old['status']:
-                    old_status = old.get('status', '?')
-                    new_status = clip.get('status', '?')
-                    if new_status == 'flagged':
-                        await send_notification(chat_id,
-                            f"❌ Clip Rejected (was {old_status})\n"
-                            f"Campaign: {clip['campaignName']}\n"
-                            f"Video: {clip.get('url', 'No link')}\n"
-                            f"Reason: {clip.get('flagReason', 'No reason given')}"
-                        )
-                    elif new_status == 'healthy':
-                        await send_notification(chat_id,
-                            f"✅ Clip Approved (was {old_status})\n"
-                            f"Campaign: {clip['campaignName']}\n"
-                            f"Video: {clip.get('url', 'No link')}"
-                        )
+                    old_s, new_s = old.get('status','?'), clip.get('status','?')
+                    if new_s == 'flagged':
+                        await send_notification(psid, f"❌ Clip Rejected (was {old_s})\nCampaign: {campaign_name}\nVideo: {clip.get('url','No link')}\nReason: {clip.get('flagReason','No reason given')}")
+                    elif new_s == 'healthy':
+                        await send_notification(psid, f"✅ Clip Approved (was {old_s})\nCampaign: {campaign_name}\nVideo: {clip.get('url','No link')}")
                     else:
-                        await send_notification(chat_id,
-                            f"🔄 Clip Status Changed\n"
-                            f"Campaign: {clip['campaignName']}\n"
-                            f"Video: {clip.get('url', 'No link')}\n"
-                            f"Old: {old_status} → New: {new_status}"
-                        )
+                        await send_notification(psid, f"🔄 Clip Status Changed\nCampaign: {campaign_name}\nVideo: {clip.get('url','No link')}\nOld: {old_s} → New: {new_s}")
                     clips_changed = True
-
-                if clip.get('views', 0) != old.get('views', 0):
-                    status_emoji = {"healthy":"✅","flagged":"❌","pending":"🕒","rejected":"❌"}.get(status,"❓")
-                    await send_notification(chat_id,
-                        f"👀 Clip Views Updated\n"
-                        f"Campaign: {clip['campaignName']}\n"
-                        f"Video: {clip.get('url', 'No link')}\n"
-                        f"Status: {status_emoji} {status}\n"
-                        f"Old: {old.get('views', 0)} → New: {clip.get('views', 0)}"
-                    )
+                # View spam reduction: only notify if change >= 500
+                old_views = old.get("views", 0)
+                new_views = clip.get("views", 0)
+                if new_views - old_views >= 500:
+                    emoji = {"healthy":"✅","flagged":"❌","pending":"🕒","rejected":"❌"}.get(status,"❓")
+                    await send_notification(psid, f"👀 Clip Views Updated\nCampaign: {campaign_name}\nVideo: {clip.get('url','No link')}\nStatus: {emoji} {status}\nOld: {old_views} → New: {new_views}")
                     clips_changed = True
     else:
         clips_changed = True
 
-    # ---- OVERALL STATS (per‑user) ----
-    total_earnings_cents = sum(c.get('earningsCents', 0) for c in fresh_clips)
-    total_views = sum(c.get('views', 0) for c in fresh_clips)
-    total_clips = len(fresh_clips)
+    total_earn = sum(c.get('earningsCents',0) for c in clips)
+    total_views = sum(c.get('views',0) for c in clips)
+    total_clips = len(clips)
 
-    old_dollars = f"${old_stats.get('totalEarningsCents', 0) / 100:.2f}"
-    new_dollars = f"${total_earnings_cents / 100:.2f}"
+    if not is_first and (total_earn != old_stats.get('totalEarningsCents') or total_views != old_stats.get('totalViews') or total_clips != old_stats.get('totalClips')):
+        await send_notification(psid, f"💰 Earnings Updated\nOld: ${old_stats.get('totalEarningsCents',0)/100:.2f}\nNew: ${total_earn/100:.2f}\nViews: {old_stats.get('totalViews',0)} → {total_views}\nClips: {old_stats.get('totalClips',0)} → {total_clips}")
 
-    if not is_first_poll and (total_earnings_cents != old_stats.get('totalEarningsCents') or
-        total_views != old_stats.get('totalViews') or
-        total_clips != old_stats.get('totalClips')):
-        await send_notification(chat_id,
-            f"💰 Earnings Updated\n"
-            f"Old: {old_dollars}\n"
-            f"New: {new_dollars}\n"
-            f"Views: {old_stats.get('totalViews', 0)} → {total_views}\n"
-            f"Clips: {old_stats.get('totalClips', 0)} → {total_clips}"
-        )
-
-    # ---- SAVE TO FIREBASE ----
-    if campaigns_changed:
-        get_user_state_ref(chat_id, 'campaigns').set(new_camp_dict)
+    if camps_changed:
+        get_user_state_ref(psid, 'campaigns').set(new_camp_dict)
     if clips_changed:
-        get_user_state_ref(chat_id, 'clips').set(new_clip_dict)
-    get_user_state_ref(chat_id, 'stats').set({
+        get_user_state_ref(psid, 'clips').set(new_clip_dict)
+    get_user_state_ref(psid, 'stats').set({
         'totalViews': total_views,
         'totalClips': total_clips,
-        'totalEarningsCents': total_earnings_cents
+        'totalEarningsCents': total_earn
     })
-    get_user_state_ref(chat_id, 'first_poll_done').set(True)
+    get_user_state_ref(psid, 'first_poll_done').set(True)
 
-    print(f"[MONITOR] User {chat_id}: campaigns={len(fresh_campaigns)}, clips={len(fresh_clips)}")
+    print(f"[MONITOR] User {psid}: campaigns={len(camps)}, clips={len(clips)}")
 
 
 async def check_all_users():
     users = get_all_users()
     print(f"[MONITOR] Checking {len(users)} user(s)...")
-    for chat_id in users:
-        await check_changes_for_user(chat_id)
+    if not users:
+        return
 
-    # ---- Send summary to owner ----
-    try:
-        if users:
-            first_user = next(iter(users))
-            camps = get_user_state_ref(first_user, 'campaigns').get() or {}
-            clips = get_user_state_ref(first_user, 'clips').get() or {}
-            msg = f"✅ Monitor check completed\nCampaigns: {len(camps)}\nClips: {len(clips)}"
-        else:
-            msg = "✅ Monitor check completed\nNo users linked."
-        await send_notification(OWNER_ID, msg)
-    except Exception as e:
-        print(f"Failed to send monitor summary: {e}")
+    # Run all users concurrently (Performance Patch)
+    tasks = [check_changes_for_user(uid) for uid in users]
+    await asyncio.gather(*tasks, return_exceptions=True)
